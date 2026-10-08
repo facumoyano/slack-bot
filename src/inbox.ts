@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { applyInboxMessage, extractPrUrl, findJobByDispatch, markProcessed, parsePayload } from "./jobs.ts";
 import type { InboxMessage } from "./jobs.ts";
+import { startsSettled } from "./bot.ts";
 import type { Poster } from "./bot.ts";
 import type { Orca } from "./orca.ts";
 import type { StoreHandle } from "./store.ts";
@@ -40,6 +41,7 @@ export async function runInbox(deps: InboxDeps, shouldStop: () => boolean = () =
     try {
       const delivery = await deps.orca.checkInbox(ack);
       ack = undefined;
+      await startsSettled();
       await processBatch(deps, delivery.messages);
       if (delivery.messages.length && delivery.deliveryId) ack = delivery.deliveryId;
     } catch (err) {

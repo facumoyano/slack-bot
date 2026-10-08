@@ -1,9 +1,9 @@
 display_information:
-  name: Orca Dev
+  name: Dev Bot
   description: Toma issues de GitHub, los resuelve con un worker de Claude Code y abre el PR.
 features:
   bot_user:
-    display_name: orca-dev
+    display_name: devbot
     always_online: true
 oauth_config:
   scopes:

@@ -11,12 +11,12 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 3. `cp .env.example .env` y completá los tokens y `ALLOWED_SLACK_USERS` (IDs separados por coma). Si alguien no autorizado menciona al bot, la respuesta le muestra su ID para que lo agregues.
 4. `npm install`.
 5. `gh auth setup-git` para que los workers puedan hacer `git push` con la sesión de `gh`.
-6. Invitá al bot a los canales (`/invite @orca-dev`).
+6. Invitá al bot a los canales (`/invite @devbot`).
 7. `scripts/start-in-orca.sh`. Abre una terminal de Orca llamada `slack-bot` que corre `node --env-file=.env src/main.ts`. Tiene que correr dentro de Orca porque la Run de orquestación se ata a la terminal que la crea.
 
 ## Uso
 
-- En el hilo de un mensaje con un issue (`https://github.com/org/repo/issues/12` o `org/repo#12`): `@orca-dev arreglalo`. Si el link está en tu mensaje, gana sobre el del mensaje raíz.
+- En el hilo de un mensaje con un issue (`https://github.com/org/repo/issues/12` o `org/repo#12`): `@devbot arreglalo`. Si el link está en tu mensaje, gana sobre el del mensaje raíz.
 - Si el worker tiene una duda, el bot la publica en el hilo mencionándote. Respondé en el hilo sin mencionar al bot.
 - Mientras trabaja, cualquier mensaje tuyo en el hilo le llega como indicación extra.
 - Cuando terminó, mencionalo de nuevo en el mismo hilo para pedir cambios. Sigue sobre el mismo worktree y la misma rama.

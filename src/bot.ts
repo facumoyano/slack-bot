@@ -31,6 +31,12 @@ export type Mention = {
 export type ThreadReply = { channel: string; threadTs: string; ts: string; text: string };
 
 const starting = new Set<string>();
+const inflightStarts = new Set<Promise<void>>();
+
+/** The inbox waits on this so a question sent before worker-start returns its dispatchId is not dropped as unknown. */
+export function startsSettled(): Promise<unknown> {
+  return Promise.allSettled([...inflightStarts]);
+}
 
 function commit(deps: BotDeps, job: Job, ev: JobEvent): Job | undefined {
   const current = deps.store.data.jobs[job.id] ?? job;
@@ -111,7 +117,13 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void>
   );
 }
 
-async function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
+function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
+  const p = launchOnce(deps, job, start).finally(() => inflightStarts.delete(p));
+  inflightStarts.add(p);
+  return p;
+}
+
+async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
   try {
     const w = await start();
     commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId });
