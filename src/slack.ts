@@ -1,7 +1,8 @@
 import bolt from "@slack/bolt";
 import { handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
-import { messageTexts, parseTarget, stripMention } from "./parse.ts";
+import { matchKnownRepo, messageTexts, parseTarget, stripMention } from "./parse.ts";
+import type { KnownRepo } from "./parse.ts";
 
 export type SlackConfig = { botToken: string; appToken: string; allowedUsers: ReadonlySet<string> };
 
@@ -18,7 +19,9 @@ export function createSlack(config: SlackConfig) {
     },
   };
 
-  async function start(deps: Omit<BotDeps, "poster">): Promise<void> {
+  const CONTEXT_LIMIT = 12000;
+
+  async function start(deps: Omit<BotDeps, "poster"> & { knownRepos(): Promise<KnownRepo[]> }): Promise<void> {
     const botUserId = (await app.client.auth.test()).user_id as string;
     const full: BotDeps = { ...deps, poster };
 
@@ -35,21 +38,27 @@ export function createSlack(config: SlackConfig) {
       }
       const text = stripMention(event.text, botUserId);
       const work = async () => {
-        let rootTexts: string[] = [];
+        // Newest first: a link posted later in the thread (often by another bot) beats the root.
+        const thread: string[][] = [];
         if (event.thread_ts) {
-          const replies = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 1 });
-          const root = replies.messages?.[0];
-          if (root) rootTexts = messageTexts(root as Parameters<typeof messageTexts>[0]);
+          const replies = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 200 });
+          for (const m of (replies.messages ?? []).filter((m) => m.ts !== event.ts).reverse()) {
+            thread.push(messageTexts(m as Parameters<typeof messageTexts>[0]).map((t) => stripMention(t, botUserId)));
+          }
         }
         const ownTexts = messageTexts({ ...event, text });
+        const threadTexts = thread.flat();
+        const target =
+          parseTarget([...ownTexts, ...threadTexts]) ?? matchKnownRepo([...ownTexts, ...threadTexts], await deps.knownRepos());
+        const context = [...thread].reverse().map((t) => t[0] ?? "").filter(Boolean).join("\n---\n").slice(-CONTEXT_LIMIT);
         await handleMention(full, {
           channel: event.channel,
           threadTs,
           ts: event.ts,
           user: event.user!,
           text,
-          context: rootTexts.length ? rootTexts.join("\n") : undefined,
-          target: parseTarget([...ownTexts, ...rootTexts]),
+          context: context || undefined,
+          target,
         });
       };
       work().catch(async (err) => {

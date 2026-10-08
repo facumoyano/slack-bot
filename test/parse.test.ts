@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { messageTexts, parseTarget, stripMention } from "../src/parse.ts";
+import { messageTexts, parseTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
 
 test("issue URL wrapped as a Slack link", () => {
   assert.deepEqual(parseTarget(["mirá <https://github.com/acme/web-app/issues/42|acme/web-app#42 Login roto>"]), {
@@ -58,4 +58,19 @@ test("finds links hidden in unfurled attachments and blocks", () => {
 
 test("stripMention removes only the bot mention", () => {
   assert.equal(stripMention("<@UBOT> arreglá esto <@U123>", "UBOT"), "arreglá esto <@U123>");
+});
+
+test("bare repo names resolve against known repos, treating - and _ alike", () => {
+  const repos = [
+    { owner: "fyso-dev", name: "fyso_backend", displayName: "fyso-backend" },
+    { owner: "fyso-dev", name: "opensource-ingest" },
+  ];
+  assert.deepEqual(matchKnownRepo(["es el repo de fyso-backend"], repos), { owner: "fyso-dev", name: "fyso_backend" });
+  assert.deepEqual(matchKnownRepo(["mirá fyso_backend"], repos), { owner: "fyso-dev", name: "fyso_backend" });
+  assert.equal(matchKnownRepo(["el backend de fyso"], repos), undefined);
+});
+
+test("a link later in the thread is found when the mention has none", () => {
+  const thread = ["es el repo de fyso-backend", "es el repo `fyso-dev/fyso_backend` y la issue es la #1717: <https://github.com/fyso-dev/fyso_backend/issues/1717>"];
+  assert.deepEqual(parseTarget(thread)?.issue, { number: 1717, url: "https://github.com/fyso-dev/fyso_backend/issues/1717" });
 });

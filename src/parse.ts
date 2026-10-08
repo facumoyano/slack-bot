@@ -44,6 +44,22 @@ export function parseTarget(texts: readonly string[]): GithubTarget | undefined 
   return undefined;
 }
 
+export type KnownRepo = { owner: string; name: string; displayName?: string };
+
+function norm(text: string): string {
+  return text.toLowerCase().replaceAll("_", "-");
+}
+
+/** Bare repo names ("fyso-backend") resolved against repos Orca already has; `-` and `_` count as equal. */
+export function matchKnownRepo(texts: readonly string[], repos: readonly KnownRepo[]): GithubTarget | undefined {
+  for (const text of texts) {
+    const words = new Set(norm(text).split(/[^a-z0-9_.-]+/).filter(Boolean));
+    const repo = repos.find((r) => words.has(norm(r.name)) || (r.displayName !== undefined && words.has(norm(r.displayName))));
+    if (repo) return { owner: repo.owner, name: repo.name };
+  }
+  return undefined;
+}
+
 type SlackMessageLike = {
   text?: string;
   attachments?: ReadonlyArray<Record<string, unknown>>;

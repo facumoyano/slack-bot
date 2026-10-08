@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { InboxMessage } from "./jobs.ts";
+import type { KnownRepo } from "./parse.ts";
 
 export class OrcaError extends Error {
   readonly code: string;
@@ -119,6 +120,13 @@ async function githubRepoId(owner: string, name: string): Promise<string | undef
       String(p.providerIdentity.repo).toLowerCase() === name.toLowerCase(),
   );
   return project?.sourceRepoIds?.[0];
+}
+
+export async function knownGithubRepos(): Promise<KnownRepo[]> {
+  const { projects = [] } = await orca(["project", "list"]);
+  return projects
+    .filter((p: Json) => p.providerIdentity?.provider === "github")
+    .map((p: Json) => ({ owner: String(p.providerIdentity.owner), name: String(p.providerIdentity.repo), displayName: p.displayName }));
 }
 
 export async function findRepo(owner: string, name: string): Promise<string> {

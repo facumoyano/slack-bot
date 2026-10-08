@@ -1,5 +1,5 @@
 import { runInbox } from "./inbox.ts";
-import { ensureRun, findRepo, realOrca } from "./orca.ts";
+import { ensureRun, findRepo, knownGithubRepos, realOrca } from "./orca.ts";
 import { createSlack } from "./slack.ts";
 import { openStore } from "./store.ts";
 
@@ -22,5 +22,5 @@ store.save();
 console.log(`orca: bound to run ${store.data.runId}`);
 
 const slack = createSlack({ botToken, appToken, allowedUsers });
-await slack.start({ orca: realOrca, store, resolveRepo: findRepo });
+await slack.start({ orca: realOrca, store, resolveRepo: findRepo, knownRepos: knownGithubRepos });
 await runInbox({ orca: realOrca, poster: slack.poster, store });
