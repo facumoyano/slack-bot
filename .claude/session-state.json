@@ -1,6 +1,6 @@
 {
   "branch": "main",
-  "lastCommit": "69b6a53 Have every worker run pstack poteto-mode and its matching playbook",
-  "savedAt": "2026-10-08T22:39:36Z",
+  "lastCommit": "11e91ee Find the target anywhere in the thread and by bare repo name",
+  "savedAt": "2026-10-08T22:43:35Z",
   "projectDir": "/home/facu/orca/projects/slack-bot"
 }

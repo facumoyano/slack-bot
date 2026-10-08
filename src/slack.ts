@@ -3,6 +3,7 @@ import { handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
 import { matchKnownRepo, messageTexts, parseTarget, stripMention } from "./parse.ts";
 import type { KnownRepo } from "./parse.ts";
+import { resolveWithClaude } from "./resolve.ts";
 
 export type SlackConfig = { botToken: string; appToken: string; allowedUsers: ReadonlySet<string> };
 
@@ -48,8 +49,17 @@ export function createSlack(config: SlackConfig) {
         }
         const ownTexts = messageTexts({ ...event, text });
         const threadTexts = thread.flat();
-        const target =
-          parseTarget([...ownTexts, ...threadTexts]) ?? matchKnownRepo([...ownTexts, ...threadTexts], await deps.knownRepos());
+        const all = [...ownTexts, ...threadTexts];
+        let target = parseTarget(all);
+        if (!target) {
+          const repos = await deps.knownRepos();
+          target =
+            matchKnownRepo(all, repos) ??
+            (await resolveWithClaude(all, repos).catch((err) => {
+              console.error("claude repo resolution failed:", err);
+              return undefined;
+            }));
+        }
         const context = [...thread].reverse().map((t) => t[0] ?? "").filter(Boolean).join("\n---\n").slice(-CONTEXT_LIMIT);
         await handleMention(full, {
           channel: event.channel,
