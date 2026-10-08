@@ -44,6 +44,10 @@ export function buildSpec(input: SpecInput): string {
     : [];
 
   return [
+    "## Method",
+    "Before any other step, invoke the Skill tool with `pstack:poteto-mode` and follow the playbook that matches this task (Bug fix, Feature, Refactoring, Perf issue, and so on), ending with its Opening a PR playbook. Treat this task as a full-autonomy grant: decide the calls the playbook lets you decide and report them in the summary.",
+    "Wherever the playbook or a skill would ask the human (AskUserQuestion or a reply that waits for the user), use the coordinator `ask` command described under Constraints instead. The human only sees Slack.",
+    "",
     "## Target",
     `Repository ${slug}${issue ? `, ${isPull ? "pull request" : "issue"} #${issue.number} (${issue.url})` : ""}. Requested from Slack by user ${job.slack.requester}.`,
     readIssue,

@@ -18,6 +18,7 @@ test("issue spec reads the issue, closes it, and demands the PR line", () => {
   assert.match(spec, /PR: <url>/);
   assert.match(spec, /--outcome failed/);
   assert.match(spec, /`ask` command/);
+  assert.ok(spec.indexOf("pstack:poteto-mode") < spec.indexOf("## Target"), "poteto-mode is invoked before the task");
   for (const section of ["## Target", "## Change", "## Constraints", "## Ownership", "## Observable acceptance"]) {
     assert.ok(spec.includes(section), section);
   }
