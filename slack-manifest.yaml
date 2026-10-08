@@ -1,9 +1,9 @@
 display_information:
-  name: Dev Bot
+  name: Alfred
   description: Toma issues de GitHub, los resuelve con un worker de Claude Code y abre el PR.
 features:
   bot_user:
-    display_name: devbot
+    display_name: alfred
     always_online: true
 oauth_config:
   scopes:
