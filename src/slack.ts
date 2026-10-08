@@ -23,7 +23,9 @@ export function createSlack(config: SlackConfig) {
   const CONTEXT_LIMIT = 12000;
 
   async function start(deps: Omit<BotDeps, "poster"> & { knownRepos(): Promise<KnownRepo[]> }): Promise<void> {
-    const botUserId = (await app.client.auth.test()).user_id as string;
+    const auth = await app.client.auth.test();
+    const botUserId = auth.user_id as string;
+    const botId = auth.bot_id as string | undefined;
     const full: BotDeps = { ...deps, poster };
 
     app.event("app_mention", async ({ event }) => {
@@ -43,7 +45,7 @@ export function createSlack(config: SlackConfig) {
         const thread: string[][] = [];
         if (event.thread_ts) {
           const replies = await app.client.conversations.replies({ channel: event.channel, ts: event.thread_ts, limit: 200 });
-          for (const m of (replies.messages ?? []).filter((m) => m.ts !== event.ts).reverse()) {
+          for (const m of (replies.messages ?? []).filter((m) => m.ts !== event.ts && m.user !== botUserId && (!botId || m.bot_id !== botId)).reverse()) {
             thread.push(messageTexts(m as Parameters<typeof messageTexts>[0]).map((t) => stripMention(t, botUserId)));
           }
         }

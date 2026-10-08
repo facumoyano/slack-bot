@@ -1,6 +1,6 @@
 {
   "branch": "main",
-  "lastCommit": "11e91ee Find the target anywhere in the thread and by bare repo name",
-  "savedAt": "2026-10-08T22:43:35Z",
+  "lastCommit": "f00e501 Ask Claude for the repo when the thread names it loosely",
+  "savedAt": "2026-10-08T22:46:23Z",
   "projectDir": "/home/facu/orca/projects/slack-bot"
 }
