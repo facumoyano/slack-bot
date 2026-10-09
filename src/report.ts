@@ -1,19 +1,33 @@
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { jobSlug } from "./files.ts";
 
 const REPORT_DIR = join(import.meta.dirname, "..", "data", "reports");
 
 export function reportPath(jobId: string): string {
-  return join(REPORT_DIR, `${jobId.replace(/[^A-Za-z0-9]+/g, "-")}.md`);
+  return join(REPORT_DIR, `${jobSlug(jobId)}.md`);
 }
 
-export async function readReport(jobId: string): Promise<string | undefined> {
-  const text = await readFile(reportPath(jobId), "utf8").catch(() => undefined);
+export function planPath(jobId: string): string {
+  return join(REPORT_DIR, `${jobSlug(jobId)}.plan.md`);
+}
+
+async function readText(path: string): Promise<string | undefined> {
+  const text = await readFile(path, "utf8").catch(() => undefined);
   return text?.trim() || undefined;
 }
 
-export async function clearReport(jobId: string): Promise<void> {
-  await rm(reportPath(jobId), { force: true });
+export function readReport(jobId: string): Promise<string | undefined> {
+  return readText(reportPath(jobId));
+}
+
+export function readPlan(jobId: string): Promise<string | undefined> {
+  return readText(planPath(jobId));
+}
+
+/** A new run starts with no report or plan, so a previous run's files are never posted as this one's. */
+export async function clearReports(jobId: string): Promise<void> {
+  await Promise.all([rm(reportPath(jobId), { force: true }), rm(planPath(jobId), { force: true })]);
 }
 
 function inline(line: string): string {

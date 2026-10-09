@@ -18,8 +18,21 @@ running_bot() {
   return 1
 }
 
+handle_file="$dir/data/bot-terminal"
+
 if pid="$(running_bot)"; then
-  echo "el bot ya está corriendo en $dir (pid $pid); no arranco otro" >&2
-  exit 1
+  if [ "${1:-}" != --restart ]; then
+    echo "el bot ya está corriendo en $dir (pid $pid); no arranco otro (usá --restart)" >&2
+    exit 1
+  fi
+  kill "$pid"
+  while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 fi
-orca terminal create --worktree "path:$dir" --title slack-bot --command "node --env-file=.env src/main.ts" --json
+# The old bot's terminal stays open at a shell prompt after the process ends; close it so restarts don't pile up terminals.
+if [ -f "$handle_file" ]; then
+  orca terminal close --terminal "$(cat "$handle_file")" --json >/dev/null 2>&1 || true
+  rm -f "$handle_file"
+fi
+mkdir -p "$dir/data"
+orca terminal create --worktree "path:$dir" --title slack-bot --command "node --env-file=.env src/main.ts" --json |
+  node -e 'const j=JSON.parse(require("fs").readFileSync(0)); const h=j.result?.terminal?.handle; if(!h){console.error(JSON.stringify(j));process.exit(1)} require("fs").writeFileSync(process.argv[1], h); console.log(`bot arrancado en la terminal ${h}`)' "$handle_file"

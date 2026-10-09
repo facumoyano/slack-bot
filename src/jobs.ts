@@ -1,5 +1,6 @@
-import { doneMessage, questionMessage } from "./blocks.ts";
-import type { Block } from "./blocks.ts";
+import { createHash } from "node:crypto";
+import { doneMessage, planMessage, questionMessage } from "./blocks.ts";
+import type { Block, Message } from "./blocks.ts";
 
 export type JobState =
   | { kind: "starting" }
@@ -21,6 +22,12 @@ export type RepoSource = "link" | "name" | "channel" | "inferred";
 
 export type RepoRef = { owner: string; name: string };
 
+/** What a worker run delivers: a PR, a cited report with no PR, or a PR after the human approves a plan. */
+export type Mode = "change" | "investigate" | "plan";
+
+/** The options of a plan-mode approval question. `Cambiar` asks the human to type the change. */
+export const PLAN_OPTIONS = { approve: "Aprobar", change: "Cambiar" } as const;
+
 export type Job = {
   id: string;
   slack: { channel: string; threadTs: string; requester: string };
@@ -28,6 +35,10 @@ export type Job = {
   repoSource?: RepoSource;
   issue?: { number: number; url: string };
   request: string;
+  /** The current run's mode; each follow-up picks its own. */
+  mode: Mode;
+  /** Hash of the plan file last posted to the thread, so an unchanged plan is not posted again. */
+  planHash?: string;
   worktreeId?: string;
   taskId?: string;
   dispatchId?: string;
@@ -56,7 +67,7 @@ export type JobEvent =
   | { kind: "answered" }
   | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
   | { kind: "cancelled"; sessionId?: string }
-  | { kind: "follow_up"; request: string }
+  | { kind: "follow_up"; request: string; mode: Mode }
   | { kind: "superseded"; reason: string };
 
 export function jobId(channel: string, threadTs: string): string {
@@ -131,7 +142,17 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       return { ...job, sessionId: ev.sessionId ?? job.sessionId, state: { kind: "cancelled" } };
     case "follow_up":
       if (from !== "done" && from !== "cancelled") return undefined;
-      return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, progress: undefined, startMsg: undefined, state: { kind: "starting" } };
+      return {
+        ...job,
+        request: ev.request,
+        mode: ev.mode,
+        planHash: undefined,
+        taskId: undefined,
+        dispatchId: undefined,
+        progress: undefined,
+        startMsg: undefined,
+        state: { kind: "starting" },
+      };
     case "superseded":
       if (!isActive(job)) return undefined;
       return { ...job, state: { kind: "failed", error: ev.reason } };
@@ -171,16 +192,26 @@ function summaryOf(msg: InboxMessage): string {
   return body.length > MAX_SUMMARY ? `${body.slice(0, MAX_SUMMARY)}…` : body;
 }
 
-export type InboxOutcome = { job: Job; post?: string; blocks?: Block[]; release?: string };
+/** `lead` is posted before `post`, as its own message. */
+export type InboxOutcome = { job: Job; lead?: Message; post?: string; blocks?: Block[]; release?: string };
 
-/** What the caller read from disk or GitHub for a worker_done; ignored for other messages. */
-export type DoneExtras = { prUrlFallback?: string; report?: string; sessionId?: string };
+/** What the caller read from disk or GitHub: the plan for a plan-mode question, the rest for a worker_done. */
+export type Extras = { prUrlFallback?: string; report?: string; sessionId?: string; plan?: string };
+
+function hash(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function doneHead(mode: Mode, outcome: "succeeded" | "failed", who: string): string {
+  if (outcome === "failed") return `❌ ${who} no pude completarlo.`;
+  return mode === "investigate" ? `🔎 ${who} listo.` : `✅ ${who} terminé.`;
+}
 
 /**
  * Decides what one orchestration message means for its Job. Pure: the caller posts,
  * releases, then commits `job` and marks the message processed.
  */
-export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneExtras = {}, now = Date.now()): InboxOutcome | undefined {
+export function applyInboxMessage(store: Store, msg: InboxMessage, extras: Extras = {}, now = Date.now()): InboxOutcome | undefined {
   if (store.processedMsgIds.includes(msg.id)) return undefined;
   const payload = parsePayload(msg);
   const job = findJobByDispatch(store, payload.dispatchId);
@@ -194,7 +225,9 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
       const next = transition(job, { kind: "question", msgId: msg.id, question, options });
       if (!next) return undefined;
       const { text, blocks } = questionMessage({ jobId: job.id, questionMsgId: msg.id, requester: job.slack.requester, question, options });
-      return { job: next, post: text, blocks };
+      const planHash = job.mode === "plan" && extras.plan ? hash(extras.plan) : undefined;
+      if (!planHash || planHash === job.planHash) return { job: next, post: text, blocks };
+      return { job: { ...next, planHash }, lead: planMessage(extras.plan!), post: text, blocks };
     }
     case "status": {
       if (!isActive(job)) return undefined;
@@ -213,9 +246,12 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
       const prUrl = extractPrUrl(msg.body ?? "") ?? extractPrUrl(report ?? "") ?? extras.prUrlFallback;
       const next = transition(job, { kind: "worker_done", outcome, summary, prUrl, sessionId });
       if (!next) return undefined;
-      const head = outcome === "succeeded" ? `✅ ${who} terminé.` : `❌ ${who} no pude completarlo.`;
-      const pr = prUrl ? `*PR:* ${prUrl}` : "No se abrió PR.";
-      const { text, blocks } = doneMessage(`${head}\n\n${summary}\n\n${pr}`, prUrl);
+      const head = doneHead(job.mode, outcome, who);
+      // An investigation's PR, if the thread has one from an earlier run, stays recorded for the next follow-up but is not this run's news.
+      const { text, blocks } =
+        job.mode === "investigate"
+          ? doneMessage(`${head}\n\n${summary}`)
+          : doneMessage(`${head}\n\n${summary}\n\n${prUrl ? `*PR:* ${prUrl}` : "No se abrió PR."}`, prUrl);
       return { job: next, post: text, blocks, release: payload.dispatchId };
     }
     default:

@@ -1,8 +1,10 @@
+import { basename } from "node:path";
 import bolt from "@slack/bolt";
 import { ACTION_PREFIX, parseClick } from "./blocks.ts";
 import { handleClick, handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
 import { parseCommand } from "./commands.ts";
+import { messageFiles } from "./files.ts";
 import { chooseTarget, findTarget, messageTexts, stripMention } from "./parse.ts";
 import { resolveWithClaude } from "./resolve.ts";
 
@@ -10,16 +12,19 @@ export type SlackConfig = { botToken: string; appToken: string };
 
 const CONTEXT_LIMIT = 12000;
 
+/** An earlier human message of the thread: its visible texts and its Slack file objects. */
+type ThreadMessage = { texts: string[]; files?: unknown[] };
+
 /** The thread's earlier human messages as the worker's context, oldest first. */
-function contextOf(thread: readonly string[][]): string | undefined {
-  return [...thread].reverse().map((t) => t[0] ?? "").filter(Boolean).join("\n---\n").slice(-CONTEXT_LIMIT) || undefined;
+function contextOf(thread: readonly ThreadMessage[]): string | undefined {
+  return [...thread].reverse().map((t) => t.texts[0] ?? "").filter(Boolean).join("\n---\n").slice(-CONTEXT_LIMIT) || undefined;
 }
 
 /**
  * Every Block Kit click goes through one handler: ack first (URL buttons included, or Slack shows an error),
  * then parse and validate the value, then the same paths as typed input.
  */
-export function registerActions(app: bolt.App, deps: BotDeps, readContext: (channel: string, threadTs: string) => Promise<string | undefined>): void {
+export function registerActions(app: bolt.App, deps: BotDeps, readThread: (channel: string, threadTs: string) => Promise<ThreadMessage[]>): void {
   app.action(new RegExp(`^${ACTION_PREFIX}`), async ({ ack, body, action }) => {
     await ack();
     if (body.type !== "block_actions") return;
@@ -30,10 +35,23 @@ export function registerActions(app: bolt.App, deps: BotDeps, readContext: (chan
     if (!click || !channel || !messageTs) return;
     const threadTs = (body.message?.thread_ts as string | undefined) ?? messageTs;
     const work = async () => {
-      const context = click.kind === "repo" ? await readContext(channel, threadTs).catch(() => undefined) : undefined;
-      await handleClick(deps, { click, user: body.user.id, channel, threadTs, messageTs, context });
+      const thread = click.kind === "repo" ? await readThread(channel, threadTs).catch(() => []) : [];
+      await handleClick(deps, { click, user: body.user.id, channel, threadTs, messageTs, context: contextOf(thread), files: messageFiles(thread) });
     };
     work().catch((err) => console.error(`click ${action.action_id} failed:`, err));
+  });
+}
+
+/** Plain thread replies, a file upload included, reach the active job of their thread. */
+export function registerMessages(app: bolt.App, deps: BotDeps, botUserId: string): void {
+  app.event("message", async ({ event }) => {
+    const msg = event as { subtype?: string; bot_id?: string; user?: string; text?: string; thread_ts?: string; ts: string; channel: string; files?: unknown[] };
+    if ((msg.subtype && msg.subtype !== "file_share") || msg.bot_id || !msg.user || !msg.thread_ts || msg.thread_ts === msg.ts) return;
+    if (!deps.allowedUsers.has(msg.user)) return;
+    if (msg.text?.includes(`<@${botUserId}>`)) return;
+    handleThreadReply(deps, { channel: msg.channel, threadTs: msg.thread_ts, ts: msg.ts, user: msg.user, text: msg.text ?? "", files: msg.files }).catch((err) =>
+      console.error("thread reply failed:", err),
+    );
   });
 }
 
@@ -61,21 +79,28 @@ export function createSlack(config: SlackConfig) {
       if (!res.ts) throw new Error("chat.postMessage returned no ts");
       return res.ts;
     },
+    async uploadFile(job, path) {
+      await app.client.filesUploadV2({ channel_id: job.slack.channel, thread_ts: job.slack.threadTs, file: path, filename: basename(path) });
+    },
   };
+  const fetchFile = (url: string) => fetch(url, { headers: { Authorization: `Bearer ${config.botToken}` } });
 
-  async function start(deps: Omit<BotDeps, "poster" | "botUserId">): Promise<void> {
+  async function start(deps: Omit<BotDeps, "poster" | "botUserId" | "fetchFile">): Promise<void> {
     const auth = await app.client.auth.test();
     const botUserId = auth.user_id as string;
     const botId = auth.bot_id as string | undefined;
-    const full: BotDeps = { ...deps, poster, botUserId };
+    const full: BotDeps = { ...deps, poster, botUserId, fetchFile };
 
-    /** Each earlier human message's texts, newest first: a link posted later (often by another bot) beats the root. */
-    async function readThread(channel: string, threadTs: string, exceptTs?: string): Promise<string[][]> {
+    /** Each earlier human message, newest first: a link posted later (often by another bot) beats the root. */
+    async function readThread(channel: string, threadTs: string, exceptTs?: string): Promise<ThreadMessage[]> {
       const replies = await app.client.conversations.replies({ channel, ts: threadTs, limit: 200 });
       return (replies.messages ?? [])
         .filter((m) => m.ts !== exceptTs && m.user !== botUserId && (!botId || m.bot_id !== botId))
         .reverse()
-        .map((m) => messageTexts(m as Parameters<typeof messageTexts>[0]).map((t) => stripMention(t, botUserId)));
+        .map((m) => ({
+          texts: messageTexts(m as Parameters<typeof messageTexts>[0]).map((t) => stripMention(t, botUserId)),
+          files: m.files,
+        }));
     }
 
     app.event("app_mention", async ({ event }) => {
@@ -98,7 +123,8 @@ export function createSlack(config: SlackConfig) {
         if (command?.name === "parar" || command?.name === "ayuda" || command?.name === "repo") return handleMention(full, mention);
         const thread = event.thread_ts ? await readThread(event.channel, event.thread_ts, event.ts) : [];
         const ownTexts = messageTexts({ ...event, text: request });
-        const all = [...ownTexts, ...thread.flat()];
+        const threadTexts = thread.flatMap((m) => m.texts);
+        const all = [...ownTexts, ...threadTexts];
         const repos = await deps.knownRepos().catch((err) => {
           console.error("listing known repos failed:", err);
           return [];
@@ -106,7 +132,7 @@ export function createSlack(config: SlackConfig) {
         const ownTarget = findTarget(ownTexts, repos);
         const target = await chooseTarget({
           own: ownTexts,
-          thread: thread.flat(),
+          thread: threadTexts,
           repos,
           channelRepo: deps.store.data.channels[event.channel],
           separate: command?.name === "nuevo",
@@ -116,7 +142,8 @@ export function createSlack(config: SlackConfig) {
               return undefined;
             }),
         });
-        await handleMention(full, { ...mention, context: contextOf(thread), target, ownTarget });
+        const files = messageFiles([event as { files?: unknown }, ...thread]);
+        await handleMention(full, { ...mention, context: contextOf(thread), target, ownTarget, files });
       };
       work().catch(async (err) => {
         console.error("app_mention failed:", err);
@@ -124,17 +151,8 @@ export function createSlack(config: SlackConfig) {
       });
     });
 
-    app.event("message", async ({ event }) => {
-      const msg = event as { subtype?: string; bot_id?: string; user?: string; text?: string; thread_ts?: string; ts: string; channel: string };
-      if (msg.subtype || msg.bot_id || !msg.user || !msg.thread_ts || msg.thread_ts === msg.ts) return;
-      if (!deps.allowedUsers.has(msg.user)) return;
-      if (msg.text?.includes(`<@${botUserId}>`)) return;
-      handleThreadReply(full, { channel: msg.channel, threadTs: msg.thread_ts, ts: msg.ts, user: msg.user, text: msg.text ?? "" }).catch((err) =>
-        console.error("thread reply failed:", err),
-      );
-    });
-
-    registerActions(app, full, async (channel, threadTs) => contextOf(await readThread(channel, threadTs)));
+    registerMessages(app, full, botUserId);
+    registerActions(app, full, (channel, threadTs) => readThread(channel, threadTs));
 
     await app.start();
     console.log(`slack: connected as ${botUserId}`);

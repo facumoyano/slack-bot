@@ -12,6 +12,8 @@ export function openStore(path: string): StoreHandle {
     if ((err as { code?: string }).code !== "ENOENT") throw err;
   }
   data.channels ??= {};
+  // Jobs saved before modes existed were all changes.
+  for (const job of Object.values(data.jobs)) job.mode ??= "change";
   mkdirSync(dirname(path), { recursive: true });
   const handle: StoreHandle = {
     data,

@@ -1,5 +1,7 @@
+import { readFile, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { basename, resolve } from "node:path";
+import { basename, extname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { answerQuestion } from "../src/ask.ts";
 import { handleClick, handleMention, handleThreadReply } from "../src/bot.ts";
@@ -8,6 +10,7 @@ import type { BotDeps, Poster } from "../src/bot.ts";
 import { parseClick } from "../src/blocks.ts";
 import type { Block } from "../src/blocks.ts";
 import { runInbox } from "../src/inbox.ts";
+import { FILES_ROOT } from "../src/files.ts";
 import { jobId } from "../src/jobs.ts";
 import { ensureRun, findRepo, knownGithubRepos, realOrca, repoIdForPath } from "../src/orca.ts";
 import { chooseTarget } from "../src/parse.ts";
@@ -21,11 +24,12 @@ const { values, positionals } = parseArgs({
     state: { type: "string", default: "data/simulate-state.json" },
     "follow-up": { type: "string" },
     "cancel-after": { type: "string" },
+    attach: { type: "string", multiple: true },
   },
 });
 const request = positionals.join(" ").trim();
 if (!request) {
-  console.error('usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--follow-up "<text>"] [--cancel-after <seconds>] "<request text or !command>"');
+  console.error('usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... "<request text or !command>"');
   process.exit(2);
 }
 
@@ -75,6 +79,9 @@ const poster: Poster = {
     console.log(`\n[${ts()}] [slack → canal, hilo nuevo]\n${text}\n`);
     return (Date.now() / 1000).toFixed(6);
   },
+  async uploadFile(_job, path) {
+    console.log(`[${ts()}] [archivo] ${basename(path)} (${(await stat(path)).size} bytes)`);
+  },
 };
 
 const command = parseCommand(request);
@@ -90,7 +97,19 @@ store.data.runId = await ensureRun(store.data.runId);
 store.save();
 console.log(`[${ts()}] run ${store.data.runId}`);
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion };
+const MIMETYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".pdf": "application/pdf", ".txt": "text/plain", ".csv": "text/csv", ".md": "text/markdown" };
+
+/** Local files as the Slack file objects of the request message, served from disk instead of Slack. */
+const attached = (values.attach ?? []).map((path, i) => {
+  const abs = resolve(path);
+  return { id: `FSIM${i + 1}`, name: basename(abs), mimetype: MIMETYPES[extname(abs).toLowerCase()] ?? "application/octet-stream", url_private_download: pathToFileURL(abs).href };
+});
+
+async function fetchFile(url: string): Promise<Response> {
+  return new Response(await readFile(fileURLToPath(url)));
+}
+
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile };
 const channel = "SIM";
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
 const target =
@@ -105,7 +124,7 @@ const finished = () => {
 
 console.log(`[${ts()}] [usuario USIM] @bot ${request}`);
 if (command?.name === "pregunta" || command?.name === "repo") {
-  await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command.name, target });
+  await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command.name, target, files: attached });
   console.log(`[${ts()}] jobs en el hilo: ${store.data.jobs[id] ? "1" : "0"}`);
   process.exit(0);
 }
@@ -129,7 +148,7 @@ stdin.on("line", (line) => {
     .catch((err) => console.error("thread reply failed:", err));
 });
 
-const inboxDeps = { orca: realOrca, poster, store, latestSession };
+const inboxDeps = { orca: realOrca, poster, store, latestSession, filesRoot: FILES_ROOT };
 const inbox = runInbox(inboxDeps, finished);
 const cancelAfter = Number(values["cancel-after"] ?? 0) * 1000;
 if (cancelAfter) {
@@ -144,7 +163,7 @@ if (cancelAfter) {
     }, cancelAfter);
   }, 500);
 }
-await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command?.name, target });
+await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command?.name, target, files: attached });
 if (!store.data.jobs[id]) process.exit(1);
 await inbox;
 
@@ -152,8 +171,9 @@ const followUp = values["follow-up"]?.trim();
 if (followUp && store.data.jobs[id].state.kind === "done") {
   console.log(`[${ts()}] estado intermedio: ${JSON.stringify(store.data.jobs[id])}`);
   console.log(`[${ts()}] [usuario USIM menciona en el hilo] @bot ${followUp}`);
+  const followUpCommand = parseCommand(followUp);
   // The job is still done until the mention lands, and runInbox would stop at once on a finished job.
-  await handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user: "USIM", text: followUp });
+  await handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user: "USIM", text: followUpCommand?.rest ?? followUp, command: followUpCommand?.name });
   await runInbox(inboxDeps, finished);
 }
 console.log(`[${ts()}] estado final: ${JSON.stringify(store.data.jobs[id])}`);

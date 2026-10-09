@@ -1,8 +1,10 @@
+import { basename } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { outboxDir, outboxFiles, retire } from "./files.ts";
 import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
 import { retireStart, startsSettled } from "./bot.ts";
-import { readReport, slackPost } from "./report.ts";
+import { readPlan, readReport, slackPost, toSlackMrkdwn } from "./report.ts";
 import type { Poster } from "./bot.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca } from "./orca.ts";
@@ -13,6 +15,8 @@ export type InboxDeps = {
   poster: Poster;
   store: StoreHandle;
   latestSession(worktreePath: string): Promise<string | undefined>;
+  /** Where each job's `out/` folder lives. */
+  filesRoot: string;
   now?(): number;
 };
 
@@ -28,7 +32,15 @@ async function renderedReport(deps: InboxDeps, msg: InboxMessage): Promise<strin
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
   const report = job && (await readReport(job.id));
   if (!report) return undefined;
-  return slackPost(report.replace(/^\s*\**PR:?\**:?\s*\S+\s*$/gim, "").trim());
+  return slackPost(report.replace(/^\s*\**PR\b:?\**:?\s*\S+\s*$/gim, "").trim());
+}
+
+async function renderedPlan(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
+  if (msg.type !== "question") return undefined;
+  const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
+  if (job?.mode !== "plan") return undefined;
+  const plan = await readPlan(job.id);
+  return plan && toSlackMrkdwn(plan);
 }
 
 async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
@@ -39,6 +51,25 @@ async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | u
     console.error(`session lookup for ${job.id} failed:`, err);
     return undefined;
   });
+}
+
+/** Uploads the worker's new outbox files; a failed one is said in the thread and retried with the next message. */
+async function flushOutbox(deps: InboxDeps, job: Job): Promise<void> {
+  const { ready, tooBig } = await outboxFiles(outboxDir(deps.filesRoot, job.id));
+  for (const path of tooBig) {
+    await deps.poster.postToThread(job, `⚠️ no subo ${basename(path)}: pesa más de 1 GB.`);
+    await retire(path, "skipped");
+  }
+  for (const path of ready) {
+    try {
+      await deps.poster.uploadFile(job, path);
+    } catch (err) {
+      console.error(`uploading ${path} failed:`, err);
+      await deps.poster.postToThread(job, `⚠️ no pude subir ${basename(path)}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    await retire(path, "sent");
+  }
 }
 
 /** Commits an outcome unless a mention changed the job (a cancel, a follow-up) while it was being posted. */
@@ -61,9 +92,13 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
       prUrlFallback: await prFallback(deps, msg),
       report: await renderedReport(deps, msg),
       sessionId: await sessionOf(deps, msg),
+      plan: await renderedPlan(deps, msg),
     };
     const before = findJobByDispatch(data, parsePayload(msg).dispatchId);
     const outcome = applyInboxMessage(data, msg, extras, now());
+    // Before the text, so a question carries its screenshot and the final report its evidence.
+    if (outcome) await flushOutbox(deps, outcome.job);
+    if (outcome?.lead) await deps.poster.postToThread(outcome.job, outcome.lead.text, outcome.lead.blocks);
     if (outcome?.post) {
       const ts = await deps.poster.postToThread(outcome.job, outcome.post, outcome.blocks);
       if (outcome.blocks && msg.type === "question") outcome.job = transition(outcome.job, { kind: "question_posted", msgId: msg.id, ts }) ?? outcome.job;

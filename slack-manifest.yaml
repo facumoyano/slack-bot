@@ -13,6 +13,8 @@ oauth_config:
       - channels:history
       - groups:history
       - reactions:write
+      - files:read
+      - files:write
       - users:read
 settings:
   event_subscriptions:

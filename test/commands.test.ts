@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { helpText, parseCommand, parseRepoArg } from "../src/commands.ts";
+import { commandMode, helpText, parseCommand, parseRepoArg } from "../src/commands.ts";
 
 test("every command and alias parses, with the rest of the text as its argument", () => {
   const cases: [string, string][] = [
@@ -73,4 +73,30 @@ test("!repo with no argument shows, borrar and clear remove, anything else is un
   assert.deepEqual(parseRepoArg("Clear", repos), { kind: "clear" });
   assert.deepEqual(parseRepoArg("backend", repos), { kind: "unknown", text: "backend" });
   assert.deepEqual(parseRepoArg("src/parse.ts y algo", repos), { kind: "unknown", text: "src/parse.ts y algo" });
+});
+
+test("!investiga and !plan parse with their aliases and pick their run's mode; other commands and plain text are changes", () => {
+  const cases: [string, string, string][] = [
+    ["!investiga ¿por qué el webhook responde 500?", "investiga", "investigate"],
+    ["!investigá por qué falla", "investiga", "investigate"],
+    ["!investigate why it fails", "investiga", "investigate"],
+    ["!plan arreglá el issue 1717", "plan", "plan"],
+    ["!planear arreglá el issue 1717", "plan", "plan"],
+    ["!nuevo arreglá el login", "nuevo", "change"],
+  ];
+  for (const [text, name, mode] of cases) {
+    const command = parseCommand(text);
+    assert.equal(command?.name, name, text);
+    assert.equal(commandMode(command?.name), mode, text);
+  }
+  assert.deepEqual(parseCommand("!investiga ¿por qué?"), { name: "investiga", rest: "¿por qué?" });
+  assert.equal(commandMode(parseCommand("arreglá el login")?.name), "change");
+  assert.equal(parseCommand("!planes para hoy"), undefined);
+});
+
+test("help lists !investiga and !plan, and tells !pregunta apart from !investiga", () => {
+  const help = helpText();
+  assert.match(help, /`!investiga <pregunta>` \(`!investigate`\): .*reporte.*sin PR/);
+  assert.match(help, /`!plan <pedido>` \(`!planear`\): .*antes de tocar código/);
+  assert.match(help, /`!pregunta <pregunta>` \(`!ask`\): respuesta rápida.*`!investiga`/);
 });
