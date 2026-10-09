@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findTarget, messageTexts, parseTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
+import { chooseTarget, findTarget, messageTexts, parseTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
 
 test("issue URL wrapped as a Slack link", () => {
   assert.deepEqual(parseTarget(["mirá <https://github.com/acme/web-app/issues/42|acme/web-app#42 Login roto>"]), {
@@ -80,4 +80,58 @@ test("findTarget says whether a link or a known repo name found the target", () 
   assert.equal(findTarget(["mirá acme/api#3"], repos)?.source, "link");
   assert.deepEqual(findTarget(["tocá billing"], repos), { owner: "acme", name: "billing", source: "name" });
   assert.equal(findTarget(["tocá el backend"], repos), undefined);
+});
+
+function resolver(guess = { owner: "acme", name: "guessed" }) {
+  const calls: number[] = [];
+  return {
+    calls,
+    infer: async () => {
+      calls.push(1);
+      return guess;
+    },
+  };
+}
+
+const known = [{ owner: "acme", name: "api" }, { owner: "acme", name: "web" }];
+const channelRepo = { owner: "acme", name: "chan" };
+
+test("resolution order: own link, own name, thread link, thread name, channel default, Claude", async () => {
+  const r = resolver();
+  const pick = (own: string[], thread: string[], channel?: typeof channelRepo) =>
+    chooseTarget({ own, thread, repos: known, channelRepo: channel, infer: r.infer });
+
+  assert.deepEqual(await pick(["mirá https://github.com/o/linked/issues/3 en web"], ["acme/api#1"], channelRepo), {
+    owner: "o",
+    name: "linked",
+    issue: { number: 3, url: "https://github.com/o/linked/issues/3" },
+    source: "link",
+  });
+  assert.deepEqual(await pick(["arreglá web"], ["https://github.com/o/thread/issues/9"], channelRepo), { owner: "acme", name: "web", source: "name" });
+  assert.deepEqual((await pick(["arreglalo"], ["es en api", "https://github.com/o/thread/issues/9"], channelRepo))?.name, "thread");
+  assert.deepEqual(await pick(["arreglalo"], ["es en api"], channelRepo), { owner: "acme", name: "api", source: "name" });
+  assert.deepEqual(r.calls, [], "Claude is never asked while anything deterministic matches");
+});
+
+test("the channel default beats Claude, and Claude is not called", async () => {
+  const r = resolver();
+  const target = await chooseTarget({ own: ["arreglá el login"], thread: ["nada acá"], repos: known, channelRepo, infer: r.infer });
+
+  assert.deepEqual(target, { owner: "acme", name: "chan", source: "channel" });
+  assert.deepEqual(r.calls, []);
+});
+
+test("with no channel default and no match, Claude decides", async () => {
+  const r = resolver();
+  const target = await chooseTarget({ own: ["arreglá el login"], thread: [], repos: known, infer: r.infer });
+
+  assert.deepEqual(target, { owner: "acme", name: "guessed", source: "inferred" });
+  assert.deepEqual(r.calls, [1]);
+});
+
+test("a separate task ignores the thread but still uses the channel default", async () => {
+  const r = resolver();
+  const target = await chooseTarget({ own: ["otra cosa"], thread: ["https://github.com/o/old/issues/1"], repos: known, channelRepo, separate: true, infer: r.infer });
+
+  assert.deepEqual(target, { owner: "acme", name: "chan", source: "channel" });
 });

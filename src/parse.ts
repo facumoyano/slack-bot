@@ -1,4 +1,4 @@
-import type { RepoSource } from "./jobs.ts";
+import type { RepoRef, RepoSource } from "./jobs.ts";
 
 export type GithubTarget = {
   owner: string;
@@ -71,6 +71,26 @@ export function findTarget(texts: readonly string[], repos: readonly KnownRepo[]
   const named = matchKnownRepo(texts, repos);
   if (named) return { ...named, source: "name" };
   return undefined;
+}
+
+/**
+ * Where a request's repo comes from, first match wins: the mention's own text (link, then known name),
+ * the thread (link, then known name), the channel's `!repo` default, and only then Claude's guess.
+ * A separate task (`!nuevo`) skips the thread so an old link up-thread cannot claim it.
+ */
+export async function chooseTarget(o: {
+  own: readonly string[];
+  thread: readonly string[];
+  repos: readonly KnownRepo[];
+  channelRepo?: RepoRef;
+  separate?: boolean;
+  infer(): Promise<GithubTarget | undefined>;
+}): Promise<FoundTarget | undefined> {
+  const found = findTarget(o.own, o.repos) ?? (o.separate ? undefined : findTarget(o.thread, o.repos));
+  if (found) return found;
+  if (o.channelRepo) return { ...o.channelRepo, source: "channel" };
+  const guess = await o.infer();
+  return guess && { ...guess, source: "inferred" };
 }
 
 type SlackMessageLike = {

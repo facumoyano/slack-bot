@@ -91,7 +91,7 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
   const existing = deps.store.data.jobs[id];
   if (existing && m.command !== "nuevo" && m.ownTarget && isOtherTask(existing, m.ownTarget)) {
-    if (isActive(existing) && existing.repoSource === "inferred" && !sameRepo(existing, m.ownTarget)) {
+    if (isActive(existing) && isGuessedRepo(existing) && !sameRepo(existing, m.ownTarget)) {
       return correctRepo(deps, existing, m, m.ownTarget);
     }
     return replyOtherTask(deps, existing, m.ownTarget);
@@ -100,6 +100,11 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
   if (existing && isResumable(existing)) return startFollowUp(deps, existing, m);
   if (starting.has(id)) return;
   return startJob(deps, m);
+}
+
+/** A repo nobody named for this job, so naming another one corrects it instead of opening a separate task. */
+function isGuessedRepo(job: Job): boolean {
+  return job.repoSource === "inferred" || job.repoSource === "channel";
 }
 
 function threadOf(m: Pick<Mention, "channel" | "threadTs" | "user">): Pick<Job, "slack"> {
@@ -156,7 +161,8 @@ async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<
 
   const { owner, name, issue, source } = m.target;
   const label = targetLabel(m.target);
-  const guessed = source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : "";
+  const guessed =
+    source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : source === "channel" ? " (repo del canal)" : "";
   await deps.poster.react(m.channel, m.ts, "saluting_face");
   await deps.poster.postToThread(where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`);
   let orcaRepoId: string;

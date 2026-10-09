@@ -2,8 +2,7 @@ import bolt from "@slack/bolt";
 import { handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
 import { parseCommand } from "./commands.ts";
-import { findTarget, messageTexts, stripMention } from "./parse.ts";
-import type { FoundTarget, KnownRepo } from "./parse.ts";
+import { chooseTarget, findTarget, messageTexts, stripMention } from "./parse.ts";
 import { resolveWithClaude } from "./resolve.ts";
 
 export type SlackConfig = { botToken: string; appToken: string; allowedUsers: ReadonlySet<string> };
@@ -67,16 +66,18 @@ export function createSlack(config: SlackConfig) {
           return [];
         });
         const ownTarget = findTarget(ownTexts, repos);
-        // A separate task looks at the thread only through Claude, so an old link up-thread cannot claim it.
-        const target: FoundTarget | undefined =
-          (command?.name === "nuevo" ? ownTarget : findTarget(all, repos)) ??
-          (await resolveWithClaude(all, repos).then(
-            (t) => t && { ...t, source: "inferred" as const },
-            (err) => {
+        const target = await chooseTarget({
+          own: ownTexts,
+          thread: thread.flat(),
+          repos,
+          channelRepo: deps.store.data.channels[event.channel],
+          separate: command?.name === "nuevo",
+          infer: () =>
+            resolveWithClaude(all, repos).catch((err) => {
               console.error("claude repo resolution failed:", err);
               return undefined;
-            },
-          ));
+            }),
+        });
         const context = [...thread].reverse().map((t) => t[0] ?? "").filter(Boolean).join("\n---\n").slice(-CONTEXT_LIMIT);
         await handleMention(full, { ...mention, context: context || undefined, target, ownTarget });
       };

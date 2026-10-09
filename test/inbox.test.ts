@@ -295,6 +295,18 @@ test("correcting a guessed repo while working stops that worker and redoes the r
   assert.equal(f.posts.at(-1), "🔁 cambio a acme/billing.");
 });
 
+test("a channel default is announced as such and naming another repo corrects it", async () => {
+  const f = fakes();
+  const fromChannel = { owner: "acme", name: "api", source: "channel" as const };
+  await handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "arreglá el login", target: fromChannel });
+  assert.match(f.posts[0], /^🫡 tomo el pedido en acme\/api \(repo del canal\)\./);
+
+  await handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.5", user: "U1", text: "es web", ownTarget: { owner: "acme", name: "web", source: "name" } });
+
+  assert.deepEqual(f.calls, ["start api-slack-11", "stop d1", "start web-slack-11"]);
+  assert.equal(f.store.data.jobs["C1:1.1"].repo.name, "web");
+});
+
 test("if the guessed worker cannot be stopped, no second worker starts", async () => {
   const f = fakes({
     async stopWorker() {
