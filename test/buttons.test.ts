@@ -141,3 +141,43 @@ test("a finished job's start message loses its stop button", async () => {
 
   assert.deepEqual(f.updates.map((u) => u.ts), [start.ts]);
 });
+
+test("a guessed or channel repo gets a picker; picking a repo stops the worker and redoes the request there", async () => {
+  for (const source of ["inferred", "channel"] as const) {
+    const f = fakes();
+    await handleMention(f.deps, { ...mention, target: { owner: "acme", name: "api", source } });
+    const { start, elements } = startButtons(f);
+    const select = elements.find((e: any) => e.type === "static_select");
+    assert.deepEqual(select.options.map((o: any) => o.text.text), ["acme/web"], source);
+    const pick: ClickInput = { click: parseClick(select.action_id, select.options[0].value)!, user: "U2", channel: "C1", threadTs: "1.1", messageTs: start.ts, context: "hilo" };
+
+    await Promise.all([handleClick(f.deps, pick), handleClick(f.deps, pick)]);
+
+    assert.deepEqual(f.calls, ["start api-slack-11", "stop d1", "start web-slack-11"], source);
+    const job = f.store.data.jobs["C1:1.1"];
+    assert.deepEqual([job.repo.name, job.repoSource, job.request, job.slack.requester, job.state.kind], ["web", "name", "arreglá el login", "U1", "working"]);
+    assert.equal(f.posts.at(-1), "🔁 cambio a acme/web.");
+    assert.equal(f.updates.length, 1, "the guessed start message loses its buttons");
+    assert.equal(f.ephemerals.length, 1, "the racing second pick is stale");
+    const redone = f.messages.at(-1)!;
+    assert.deepEqual(
+      (redone.blocks ?? []).flatMap((b: any) => (b.type === "actions" ? b.elements.map((e: any) => e.type) : [])),
+      ["button"],
+      "the redone job's repo was picked, so it only offers stop",
+    );
+  }
+});
+
+test("a picked repo Orca does not know, or a pick after the job moved on, changes nothing", async () => {
+  const f = fakes();
+  await handleMention(f.deps, { ...mention, target: { owner: "acme", name: "api", source: "inferred" } });
+  const { start } = startButtons(f);
+  const at = { user: "U1", channel: "C1", threadTs: "1.1", messageTs: start.ts };
+
+  await handleClick(f.deps, { ...at, click: { kind: "repo", jobId: "C1:1.1", repo: { owner: "evil", name: "repo" } } });
+  await handleClick(f.deps, { ...at, click: { kind: "stop", jobId: "C1:1.1" } });
+  await handleClick(f.deps, { ...at, click: { kind: "repo", jobId: "C1:1.1", repo: { owner: "acme", name: "web" } } });
+
+  assert.deepEqual(f.calls, ["start api-slack-11", "stop d1"]);
+  assert.equal(f.ephemerals.length, 2);
+});

@@ -3,7 +3,7 @@ import type { Block, Click } from "./blocks.ts";
 import { helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
 import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
-import type { Job, JobEvent } from "./jobs.ts";
+import type { Job, JobEvent, RepoRef } from "./jobs.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
@@ -148,22 +148,32 @@ async function replyOtherTask(deps: BotDeps, job: Job, target: FoundTarget): Pro
 
 /** The user named the right repo after the bot guessed wrong: stop the guess and redo the original request there. */
 async function correctRepo(deps: BotDeps, job: Job, m: Mention, target: FoundTarget): Promise<void> {
-  if (!job.dispatchId) return handleThreadInput(deps, job, m);
+  // A worker still starting has no dispatchId to stop yet; let it settle first, as !parar does.
+  if (job.state.kind === "starting") await startsSettled();
+  const current = deps.store.data.jobs[job.id] ?? job;
   const label = targetLabel(target);
+  const redo = () => startJob(deps, { ...m, user: current.slack.requester, text: current.request, target }, `🔁 cambio a ${label}.`);
+  if (current.state.kind === "failed") return redo();
+  if (!isActive(current) || !current.dispatchId) return;
   try {
-    await deps.orca.stopWorker(job.dispatchId);
+    await deps.orca.stopWorker(current.dispatchId);
   } catch (err) {
-    console.error(`worker-stop ${job.dispatchId} failed:`, err);
-    await deps.poster.postToThread(job, `❌ no pude frenar el worker de ${jobLabel(job)} (${errorText(err)}), así que no arranco otro en ${label}.`);
+    console.error(`worker-stop ${current.dispatchId} failed:`, err);
+    await deps.poster.postToThread(current, `❌ no pude frenar el worker de ${jobLabel(current)} (${errorText(err)}), así que no arranco otro en ${label}.`);
     return;
   }
-  await commitEnding(deps, job, { kind: "superseded", reason: `el usuario corrigió el repo a ${label}` });
-  await startJob(deps, { ...m, user: job.slack.requester, text: job.request, target }, `🔁 cambio a ${label}.`);
+  await commitEnding(deps, current, { kind: "superseded", reason: `el usuario corrigió el repo a ${label}` });
+  await redo();
 }
 
 /** Posts the message that announces a worker, with its stop button. */
-async function postStart(deps: BotDeps, where: Pick<Job, "slack">, text: string): Promise<{ ts: string; text: string }> {
-  const msg = startMessage({ jobId: jobId(where.slack.channel, where.slack.threadTs), text });
+async function postStart(
+  deps: BotDeps,
+  where: Pick<Job, "slack">,
+  text: string,
+  picker?: { current: RepoRef; repos: readonly RepoRef[] },
+): Promise<{ ts: string; text: string }> {
+  const msg = startMessage({ jobId: jobId(where.slack.channel, where.slack.threadTs), text, ...picker });
   return { ts: await deps.poster.postToThread(where, msg.text, msg.blocks), text };
 }
 
@@ -200,7 +210,8 @@ async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<
   const guessed =
     source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : source === "channel" ? " (repo del canal)" : "";
   await deps.poster.react(m.channel, m.ts, "saluting_face");
-  const startMsg = await postStart(deps, where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`);
+  const picker = source === "inferred" || source === "channel" ? { current: { owner, name }, repos: await knownReposOrNone(deps) } : undefined;
+  const startMsg = await postStart(deps, where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`, picker);
   let orcaRepoId: string;
   try {
     orcaRepoId = await deps.resolveRepo(owner, name);
@@ -302,15 +313,19 @@ async function answer(deps: BotDeps, m: Mention): Promise<void> {
   }
 }
 
+function knownReposOrNone(deps: BotDeps): Promise<KnownRepo[]> {
+  return deps.knownRepos().catch((err) => {
+    console.error("listing known repos failed:", err);
+    return [];
+  });
+}
+
 function knownList(repos: readonly KnownRepo[]): string {
   return repos.length ? `Repos que conozco: ${repos.map((r) => `\`${r.owner}/${r.name}\``).join(", ")}.` : "Orca no tiene repos de GitHub cargados todavía.";
 }
 
 async function channelRepo(deps: BotDeps, m: Mention): Promise<void> {
-  const repos = await deps.knownRepos().catch((err) => {
-    console.error("listing known repos failed:", err);
-    return [];
-  });
+  const repos = await knownReposOrNone(deps);
   const arg = parseRepoArg(m.text, repos);
   const channels = deps.store.data.channels;
   const current = channels[m.channel];
@@ -427,7 +442,7 @@ export async function handleThreadReply(deps: BotDeps, r: ThreadReply): Promise<
   return true;
 }
 
-/** Jobs a stop click is already stopping, so a double click stops once. */
+/** Jobs a stop or change-repo click is already stopping, so a double click stops once. */
 const stopping = new Set<string>();
 
 const STALE = "Ese botón ya no es válido: el hilo siguió de largo.";
@@ -454,6 +469,16 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
         await cancel(deps, input).finally(() => stopping.delete(job.id));
       }
       break;
+    case "repo": {
+      const known = (await knownReposOrNone(deps)).find((r) => r.owner === click.repo.owner && r.name === click.repo.name);
+      if (onStartMsg && known && isGuessedRepo(job) && !sameRepo(job, known) && !stopping.has(job.id)) {
+        handled = true;
+        stopping.add(job.id);
+        const m = { channel: input.channel, threadTs: input.threadTs, ts: input.threadTs, user: input.user, text: job.request, context: input.context };
+        await correctRepo(deps, job, m, { owner: known.owner, name: known.name, source: "name" }).finally(() => stopping.delete(job.id));
+      }
+      break;
+    }
     case "answer": {
       const state = job?.state;
       const option = state?.kind === "awaiting_answer" && state.questionMsgId === click.questionMsgId && state.postTs === input.messageTs ? state.options[click.option] : undefined;
