@@ -1,7 +1,8 @@
 import { helpText, parseCommand } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
-import { isActive, isOtherTask, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
+import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent } from "./jobs.ts";
+import { worktreePath } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import type { FoundTarget } from "./parse.ts";
 import { clearReport, reportPath } from "./report.ts";
@@ -21,6 +22,7 @@ export type BotDeps = {
   poster: Poster;
   store: StoreHandle;
   resolveRepo(owner: string, name: string): Promise<string>;
+  latestSession(worktreePath: string): Promise<string | undefined>;
   botUserId?: string;
 };
 
@@ -41,7 +43,8 @@ export type Mention = {
 
 export type ThreadReply = { channel: string; threadTs: string; ts: string; text: string };
 
-const starting = new Set<string>();
+/** Thread jobs whose first start is still resolving the repo, before the job exists in the store. */
+const starting = new Map<string, Promise<void>>();
 const inflightStarts = new Set<Promise<void>>();
 
 /** The inbox waits on this so a question sent before worker-start returns its dispatchId is not dropped as unknown. */
@@ -72,6 +75,8 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
       return;
     case "ayuda":
       return deps.poster.postToThread(threadOf(m), helpText());
+    case "parar":
+      return cancel(deps, m);
     case "nuevo":
       if (m.threadTs !== m.ts) return startInNewThread(deps, m);
   }
@@ -84,7 +89,7 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
     return replyOtherTask(deps, existing, m.ownTarget);
   }
   if (existing && isActive(existing)) return handleThreadInput(deps, existing, m);
-  if (existing?.state.kind === "done" && existing.worktreeId) return startFollowUp(deps, existing, m);
+  if (existing && isResumable(existing)) return startFollowUp(deps, existing, m);
   if (starting.has(id)) return;
   return startJob(deps, m);
 }
@@ -124,8 +129,14 @@ async function correctRepo(deps: BotDeps, job: Job, m: Mention, target: FoundTar
   await startJob(deps, { ...m, user: job.slack.requester, text: job.request, target }, `🔁 cambio a ${label}.`);
 }
 
-async function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
+function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
+  const p = startJobOnce(deps, m, intro).finally(() => starting.delete(id));
+  starting.set(id, p);
+  return p;
+}
+
+async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
   const where = threadOf(m);
   if (!m.target) {
     await deps.poster.postToThread(
@@ -138,36 +149,33 @@ async function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void
   const { owner, name, issue, source } = m.target;
   const label = targetLabel(m.target);
   const guessed = source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : "";
-  starting.add(id);
+  await deps.poster.react(m.channel, m.ts, "saluting_face");
+  await deps.poster.postToThread(where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`);
+  let orcaRepoId: string;
   try {
-    await deps.poster.react(m.channel, m.ts, "saluting_face");
-    await deps.poster.postToThread(where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`);
-    let orcaRepoId: string;
-    try {
-      orcaRepoId = await deps.resolveRepo(owner, name);
-    } catch (err) {
-      await deps.poster.postToThread(where, `❌ <@${m.user}> no pude preparar el repo ${owner}/${name}: ${errorText(err)}`);
-      return;
-    }
-    const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text });
-    deps.store.data.jobs[job.id] = job;
-    deps.store.save();
-    await launch(deps, job, () =>
-      deps.orca.startWorker({
-        repoId: orcaRepoId,
-        name: slug(`${name}-${issue ? `issue-${issue.number}` : "slack"}-${m.threadTs.replace(".", "").slice(-8)}`),
-        title: taskTitle(job),
-        spec: buildSpec({ job, context: m.context, reportPath: reportPath(job.id) }),
-      }),
-    );
-  } finally {
-    starting.delete(id);
+    orcaRepoId = await deps.resolveRepo(owner, name);
+  } catch (err) {
+    await deps.poster.postToThread(where, `❌ <@${m.user}> no pude preparar el repo ${owner}/${name}: ${errorText(err)}`);
+    return;
   }
+  const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text });
+  deps.store.data.jobs[job.id] = job;
+  deps.store.save();
+  await launch(deps, job, () =>
+    deps.orca.startWorker({
+      repoId: orcaRepoId,
+      name: slug(`${name}-${issue ? `issue-${issue.number}` : "slack"}-${m.threadTs.replace(".", "").slice(-8)}`),
+      title: taskTitle(job),
+      spec: buildSpec({ job, context: m.context, reportPath: reportPath(job.id) }),
+    }),
+  );
 }
 
+const CANCELLED_SUMMARY = "The user cancelled the previous worker before it finished. Its work so far is whatever is committed or left uncommitted in this worktree.";
+
 async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void> {
-  if (job.state.kind !== "done" || !job.worktreeId) return;
-  const previous = job.state;
+  if (!isResumable(job) || !job.worktreeId) return;
+  const previous = job.state.kind === "done" ? job.state : { summary: CANCELLED_SUMMARY, prUrl: undefined };
   const worktreeId = job.worktreeId;
   const next = commit(deps, job, { kind: "follow_up", request: m.text });
   if (!next) return;
@@ -214,6 +222,37 @@ async function resumeSession(
     await deps.orca.closeTerminal(handle).catch((closeErr) => console.error(`closing terminal ${handle} failed:`, closeErr));
     throw err;
   }
+}
+
+async function cancel(deps: BotDeps, m: Mention): Promise<void> {
+  const id = jobId(m.channel, m.threadTs);
+  // A start in flight has no dispatchId yet; let it settle so there is a worker to stop.
+  await starting.get(id);
+  if (deps.store.data.jobs[id]?.state.kind === "starting") await startsSettled();
+  const job = deps.store.data.jobs[id];
+  if (!job || !isActive(job) || !job.dispatchId) {
+    await deps.poster.postToThread(threadOf(m), "No hay nada corriendo en este hilo.");
+    return;
+  }
+  try {
+    await deps.orca.stopWorker(job.dispatchId);
+  } catch (err) {
+    console.error(`worker-stop ${job.dispatchId} failed:`, err);
+    await deps.poster.postToThread(job, `❌ no pude parar el worker (${errorText(err)}). Sigue como estaba.`);
+    return;
+  }
+  const worktreeId = job.worktreeId;
+  const [sessionId, branch] = worktreeId
+    ? await Promise.all([
+        deps.latestSession(worktreePath(worktreeId)).catch(() => undefined),
+        deps.orca.currentBranch(worktreeId).catch(() => undefined),
+      ])
+    : [];
+  if (!commit(deps, job, { kind: "cancelled", sessionId })) return;
+  await deps.poster.postToThread(
+    job,
+    `⏹️ cancelado. El trabajo queda en la rama ${branch ? `\`${branch}\`` : "del worktree"} por si querés retomarlo (mencioname en este hilo).`,
+  );
 }
 
 function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {

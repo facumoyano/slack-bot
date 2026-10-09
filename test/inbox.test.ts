@@ -71,6 +71,9 @@ function fakes(over: Partial<Orca> = {}) {
       calls.push("lookup");
       return "https://github.com/acme/api/pull/99";
     },
+    async currentBranch() {
+      return "api-issue-5";
+    },
   };
   const store = memoryStore();
   const sessions: Record<string, string> = { "/wt/api": "sess-1" };
@@ -439,4 +442,92 @@ test("an !aparte mention does nothing, and !ayuda posts the command list", async
   assert.equal(f.posts.length, 1);
   assert.match(f.posts[0], /`!pregunta/);
   assert.deepEqual(f.calls, []);
+});
+
+const stopMention = { channel: "C1", threadTs: "100.1", ts: "100.7", user: "U1", text: "", command: "parar" as const };
+
+test("!parar stops the active worker once, records its session, and says where the work stays", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await handleMention(f.deps, stopMention);
+
+  assert.deepEqual(f.calls, ["stop d1"]);
+  const job = f.store.data.jobs["C1:100.1"];
+  assert.deepEqual(job.state, { kind: "cancelled" });
+  assert.equal(job.sessionId, "sess-1");
+  assert.deepEqual(f.posts, ["⏹️ cancelado. El trabajo queda en la rama `api-issue-5` por si querés retomarlo (mencioname en este hilo)."]);
+});
+
+test("!parar with nothing running says so and stops nothing", async () => {
+  for (const job of [doneJob("sess-1"), undefined]) {
+    const f = fakes();
+    if (job) f.store.data.jobs[job.id] = job;
+
+    await handleMention(f.deps, stopMention);
+
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.posts, ["No hay nada corriendo en este hilo."]);
+    if (job) assert.equal(f.store.data.jobs[job.id].state.kind, "done");
+  }
+});
+
+test("when worker-stop fails the job keeps running and the thread is told", async () => {
+  const f = fakes({
+    async stopWorker() {
+      throw new Error("dispatch busy");
+    },
+  });
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await handleMention(f.deps, stopMention);
+
+  assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "working");
+  assert.match(f.posts.at(-1)!, /❌ no pude parar el worker \(dispatch busy\)/);
+});
+
+test("!parar during a start waits for the dispatch, then stops it", async () => {
+  let started: (() => void) | undefined;
+  const f = fakes({
+    async startWorker() {
+      await new Promise<void>((resolve) => (started = resolve));
+      return { taskId: "t1", dispatchId: "d1", worktreeId: "r1::/wt/api" };
+    },
+  });
+  const start = handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "arreglá", target: { owner: "acme", name: "api", source: "link" } });
+  const stop = handleMention(f.deps, { ...stopMention, threadTs: "1.1", ts: "1.2" });
+  while (!started) await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.deepEqual(f.calls, [], "nothing is stopped before the dispatch exists");
+  started();
+  await Promise.all([start, stop]);
+
+  assert.deepEqual(f.calls, ["stop d1"]);
+  assert.equal(f.store.data.jobs["C1:1.1"].state.kind, "cancelled");
+});
+
+test("a worker_done after a cancel posts nothing but is processed and released", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+  await handleMention(f.deps, stopMention);
+  const posts = f.posts.length;
+
+  await processBatch(f.deps, [{ id: "m7", type: "worker_done", body: "Listo\nPR: https://github.com/acme/api/pull/1", payload: JSON.stringify({ dispatchId: "d1", outcome: "succeeded" }) }]);
+
+  assert.equal(f.posts.length, posts);
+  assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "cancelled");
+  assert.ok(f.store.data.processedMsgIds.includes("m7"));
+  assert.deepEqual(f.calls, ["stop d1", "release d1"]);
+});
+
+test("a mention after a cancel resumes the cancelled worker's session", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+  await handleMention(f.deps, stopMention);
+
+  await handleMention(f.deps, { ...followUpMention, text: "seguí, pero sin tocar el login" });
+
+  const job = f.store.data.jobs["C1:100.1"];
+  assert.deepEqual(f.calls.slice(1), ["terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
+  assert.equal(job.state.kind, "working");
+  assert.equal(job.request, "seguí, pero sin tocar el login");
 });

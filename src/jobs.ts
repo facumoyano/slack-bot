@@ -3,6 +3,7 @@ export type JobState =
   | { kind: "working" }
   | { kind: "awaiting_answer"; questionMsgId: string; question: string }
   | { kind: "done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string }
+  | { kind: "cancelled" }
   | { kind: "failed"; error: string };
 
 /** How the repo was found: a GitHub link or `owner/repo#n`, an exact known repo name, or Claude's guess from the thread. */
@@ -31,6 +32,7 @@ export type JobEvent =
   | { kind: "question"; msgId: string; question: string }
   | { kind: "answered" }
   | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
+  | { kind: "cancelled"; sessionId?: string }
   | { kind: "follow_up"; request: string }
   | { kind: "superseded"; reason: string };
 
@@ -64,6 +66,11 @@ export function isActive(job: Job): boolean {
   return k === "starting" || k === "working" || k === "awaiting_answer";
 }
 
+/** A finished or cancelled job whose worktree a later mention continues. */
+export function isResumable(job: Job): boolean {
+  return (job.state.kind === "done" || job.state.kind === "cancelled") && job.worktreeId !== undefined;
+}
+
 /** Returns undefined when the event does not apply to the job's current state. */
 export function transition(job: Job, ev: JobEvent): Job | undefined {
   const from = job.state.kind;
@@ -93,8 +100,11 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
         sessionId: ev.sessionId ?? job.sessionId,
         state: { kind: "done", outcome: ev.outcome, summary: ev.summary, prUrl: ev.prUrl },
       };
+    case "cancelled":
+      if (!isActive(job)) return undefined;
+      return { ...job, sessionId: ev.sessionId ?? job.sessionId, state: { kind: "cancelled" } };
     case "follow_up":
-      if (from !== "done") return undefined;
+      if (from !== "done" && from !== "cancelled") return undefined;
       return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, state: { kind: "starting" } };
     case "superseded":
       if (!isActive(job)) return undefined;
@@ -162,6 +172,8 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
     case "escalation":
       return { job, post: `⚠️ ${who} el worker escaló: ${msg.subject ?? ""}\n${msg.body ?? ""}`.trim() };
     case "worker_done": {
+      // The user stopped this dispatch; its late report is not news, but the worker still needs releasing.
+      if (job.state.kind === "cancelled") return { job, release: payload.dispatchId };
       const outcome = payload.outcome === "succeeded" ? "succeeded" : "failed";
       const { report, sessionId } = extras;
       const summary = report ?? summaryOf(msg);

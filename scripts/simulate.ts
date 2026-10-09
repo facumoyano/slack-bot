@@ -48,7 +48,7 @@ store.data.runId = await ensureRun(store.data.runId);
 store.save();
 console.log(`[${ts()}] run ${store.data.runId}`);
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo };
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, latestSession };
 const channel = "SIM";
 const threadTs = (Date.now() / 1000).toFixed(6);
 const id = jobId(channel, threadTs);

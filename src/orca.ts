@@ -199,11 +199,16 @@ export function worktreePath(worktreeId: string): string {
   return worktreeId.slice(worktreeId.indexOf("::") + 2);
 }
 
-/** Fallback when worker_done omits the PR line: look the PR up by the worktree's branch. */
-export async function lookupPrUrl(worktreeId: string, owner: string, name: string): Promise<string | undefined> {
+export async function currentBranch(worktreeId: string): Promise<string | undefined> {
   const branch = await exec("git", ["-C", worktreePath(worktreeId), "branch", "--show-current"]);
   const head = branch.stdout.trim();
-  if (branch.code !== 0 || !head) return undefined;
+  return branch.code === 0 && head ? head : undefined;
+}
+
+/** Fallback when worker_done omits the PR line: look the PR up by the worktree's branch. */
+export async function lookupPrUrl(worktreeId: string, owner: string, name: string): Promise<string | undefined> {
+  const head = await currentBranch(worktreeId);
+  if (!head) return undefined;
   const pr = await exec("gh", ["pr", "list", "--repo", `${owner}/${name}`, "--head", head, "--state", "all", "--json", "url", "--limit", "1"]);
   if (pr.code !== 0) return undefined;
   try {
@@ -226,6 +231,7 @@ export type Orca = {
   send: typeof send;
   release: typeof release;
   lookupPrUrl: typeof lookupPrUrl;
+  currentBranch: typeof currentBranch;
 };
 
 export const realOrca: Orca = {
@@ -241,4 +247,5 @@ export const realOrca: Orca = {
   send,
   release,
   lookupPrUrl,
+  currentBranch,
 };
