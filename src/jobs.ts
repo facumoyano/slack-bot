@@ -1,7 +1,17 @@
+import { questionMessage } from "./blocks.ts";
+import type { Block } from "./blocks.ts";
+
 export type JobState =
   | { kind: "starting" }
   | { kind: "working" }
-  | { kind: "awaiting_answer"; questionMsgId: string; question: string }
+  | {
+      kind: "awaiting_answer";
+      questionMsgId: string;
+      question: string;
+      options: string[];
+      /** The Slack message holding the option buttons, retired once the question is answered. */
+      postTs?: string;
+    }
   | { kind: "done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string }
   | { kind: "cancelled" }
   | { kind: "failed"; error: string };
@@ -39,7 +49,8 @@ export type Store = {
 export type JobEvent =
   | { kind: "started"; worktreeId: string; taskId: string; dispatchId: string }
   | { kind: "start_failed"; error: string }
-  | { kind: "question"; msgId: string; question: string }
+  | { kind: "question"; msgId: string; question: string; options: string[] }
+  | { kind: "question_posted"; msgId: string; ts: string }
   | { kind: "answered" }
   | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
   | { kind: "cancelled"; sessionId?: string }
@@ -99,7 +110,10 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       return { ...job, state: { kind: "failed", error: ev.error } };
     case "question":
       if (from !== "working" && from !== "awaiting_answer") return undefined;
-      return { ...job, state: { kind: "awaiting_answer", questionMsgId: ev.msgId, question: ev.question } };
+      return { ...job, state: { kind: "awaiting_answer", questionMsgId: ev.msgId, question: ev.question, options: ev.options } };
+    case "question_posted":
+      if (job.state.kind !== "awaiting_answer" || job.state.questionMsgId !== ev.msgId) return undefined;
+      return { ...job, state: { ...job.state, postTs: ev.ts } };
     case "answered":
       if (from !== "awaiting_answer") return undefined;
       return { ...job, state: { kind: "working" } };
@@ -155,7 +169,7 @@ function summaryOf(msg: InboxMessage): string {
   return body.length > MAX_SUMMARY ? `${body.slice(0, MAX_SUMMARY)}…` : body;
 }
 
-export type InboxOutcome = { job: Job; post?: string; release?: string };
+export type InboxOutcome = { job: Job; post?: string; blocks?: Block[]; release?: string };
 
 /** What the caller read from disk or GitHub for a worker_done; ignored for other messages. */
 export type DoneExtras = { prUrlFallback?: string; report?: string; sessionId?: string };
@@ -174,10 +188,11 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
   switch (msg.type) {
     case "question": {
       const question = payload.question ?? msg.body ?? msg.subject ?? "";
-      const next = transition(job, { kind: "question", msgId: msg.id, question });
+      const options = Array.isArray(payload.options) ? payload.options.map(String).filter((o) => o.trim()) : [];
+      const next = transition(job, { kind: "question", msgId: msg.id, question, options });
       if (!next) return undefined;
-      const options = Array.isArray(payload.options) && payload.options.length ? `\nOpciones: ${payload.options.join(" / ")}` : "";
-      return { job: next, post: `${who} pregunta: ${question}${options}\n_Respondé en este hilo._` };
+      const { text, blocks } = questionMessage({ jobId: job.id, questionMsgId: msg.id, requester: job.slack.requester, question, options });
+      return { job: next, post: text, blocks };
     }
     case "status": {
       if (!isActive(job)) return undefined;

@@ -2,9 +2,10 @@ import { createInterface } from "node:readline";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { answerQuestion } from "../src/ask.ts";
-import { handleMention, handleThreadReply } from "../src/bot.ts";
+import { handleClick, handleMention, handleThreadReply } from "../src/bot.ts";
 import { parseCommand } from "../src/commands.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
+import { parseClick } from "../src/blocks.ts";
 import type { Block } from "../src/blocks.ts";
 import { runInbox } from "../src/inbox.ts";
 import { jobId } from "../src/jobs.ts";
@@ -91,7 +92,7 @@ store.data.runId = await ensureRun(store.data.runId);
 store.save();
 console.log(`[${ts()}] run ${store.data.runId}`);
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, latestSession, ask: answerQuestion };
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion };
 const channel = "SIM";
 const threadTs = (Date.now() / 1000).toFixed(6);
 const id = jobId(channel, threadTs);
@@ -110,8 +111,18 @@ const stdin = createInterface({ input: process.stdin });
 stdin.on("line", (line) => {
   const text = line.trim();
   if (!text) return;
+  const click = /^:click(?:-as\s+(\S+))?\s+(\S+)\s+(.+)$/.exec(text);
+  if (click) {
+    const [, as = "USIM", action, value] = click;
+    const messageTs = clickable.get(`${action} ${value}`);
+    const parsed = parseClick(action, value);
+    if (!parsed || !messageTs) return console.log(`[${ts()}] (click desconocido: ${action} ${value})`);
+    console.log(`[${ts()}] [usuario ${as} toca ${action} en ${messageTs}]`);
+    handleClick(deps, { click: parsed, user: as, channel, threadTs, messageTs }).catch((err) => console.error("click failed:", err));
+    return;
+  }
   console.log(`[${ts()}] [usuario USIM responde en hilo] ${text}`);
-  handleThreadReply(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), text })
+  handleThreadReply(deps, { channel, threadTs, ts: nextTs(), user: "USIM", text })
     .then((handled) => handled || console.log(`[${ts()}] (sin job activo en el hilo; ignorado)`))
     .catch((err) => console.error("thread reply failed:", err));
 });

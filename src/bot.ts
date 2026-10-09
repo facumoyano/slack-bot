@@ -1,4 +1,5 @@
-import type { Block } from "./blocks.ts";
+import { answeredMessage } from "./blocks.ts";
+import type { Block, Click } from "./blocks.ts";
 import { helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
 import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
@@ -30,6 +31,8 @@ export type BotDeps = {
   /** GitHub repos Orca already has, for `!repo` and the change-repo picker. */
   knownRepos(): Promise<KnownRepo[]>;
   latestSession(worktreePath: string): Promise<string | undefined>;
+  /** Who may start work and click buttons. */
+  allowedUsers: ReadonlySet<string>;
   /** Answers a question read-only from a repo checkout, as Markdown. */
   ask(o: { repoPath: string; question: string; thread?: string }): Promise<string>;
   botUserId?: string;
@@ -50,7 +53,10 @@ export type Mention = {
   command?: CommandName;
 };
 
-export type ThreadReply = { channel: string; threadTs: string; ts: string; text: string };
+export type ThreadReply = { channel: string; threadTs: string; ts: string; user: string; text: string };
+
+/** A validated button or select click, located by the message it came from. */
+export type ClickInput = { click: Click; user: string; channel: string; threadTs: string; messageTs: string; context?: string };
 
 /** Thread jobs whose first start is still resolving the repo, before the job exists in the store. */
 const starting = new Map<string, Promise<void>>();
@@ -348,12 +354,31 @@ async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca[
   }
 }
 
-async function handleThreadInput(deps: BotDeps, job: Job, input: { ts: string; text: string; channel: string }): Promise<void> {
+/** Questions whose `orca reply` is in flight, so a click and a typed reply racing each other answer once. */
+const answering = new Set<string>();
+
+/** Answers the pending question, typed or clicked, and retires its buttons. False when nothing is pending anymore. */
+async function answerWorker(deps: BotDeps, job: Job, text: string, user: string): Promise<boolean> {
+  const state = job.state;
+  if (state.kind !== "awaiting_answer" || answering.has(state.questionMsgId)) return false;
+  answering.add(state.questionMsgId);
+  try {
+    await deps.orca.reply(state.questionMsgId, text);
+    commit(deps, job, { kind: "answered" });
+  } finally {
+    answering.delete(state.questionMsgId);
+  }
+  if (state.postTs) {
+    const done = answeredMessage({ requester: job.slack.requester, question: state.question, user, answer: text });
+    await deps.poster.update(job.slack.channel, state.postTs, done.text, done.blocks).catch((err) => console.error(`retiring question buttons in ${job.id} failed:`, err));
+  }
+  return true;
+}
+
+async function handleThreadInput(deps: BotDeps, job: Job, input: { ts: string; text: string; channel: string; user: string }): Promise<void> {
   const state = job.state;
   if (state.kind === "awaiting_answer") {
-    await deps.orca.reply(state.questionMsgId, input.text);
-    commit(deps, job, { kind: "answered" });
-    await deps.poster.react(input.channel, input.ts, "white_check_mark");
+    if (await answerWorker(deps, job, input.text, input.user)) await deps.poster.react(input.channel, input.ts, "white_check_mark");
   } else if (state.kind === "working" && job.dispatchId) {
     await deps.orca.send(job.dispatchId, input.text);
     await deps.poster.react(input.channel, input.ts, "eyes");
@@ -369,4 +394,27 @@ export async function handleThreadReply(deps: BotDeps, r: ThreadReply): Promise<
   if (!job || !isActive(job)) return false;
   await handleThreadInput(deps, job, r);
   return true;
+}
+
+const STALE = "Ese botón ya no es válido: el hilo siguió de largo.";
+
+/** Buttons run the same paths as typed input. A click on a message the job has moved past changes nothing. */
+export async function handleClick(deps: BotDeps, input: ClickInput): Promise<void> {
+  const where = { slack: { channel: input.channel, threadTs: input.threadTs, requester: input.user } };
+  if (!deps.allowedUsers.has(input.user)) {
+    await deps.poster.ephemeral(where, input.user, `Perdón <@${input.user}>, no tengo permiso para trabajar para vos. Pedile al dueño del bot que agregue tu ID \`${input.user}\` a ALLOWED_SLACK_USERS.`);
+    return;
+  }
+  const { click } = input;
+  const job = click.jobId === jobId(input.channel, input.threadTs) ? deps.store.data.jobs[click.jobId] : undefined;
+  let handled = false;
+  switch (click.kind) {
+    case "answer": {
+      const state = job?.state;
+      const option = state?.kind === "awaiting_answer" && state.questionMsgId === click.questionMsgId && state.postTs === input.messageTs ? state.options[click.option] : undefined;
+      handled = option !== undefined && (await answerWorker(deps, job!, option, input.user));
+      break;
+    }
+  }
+  if (!handled) await deps.poster.ephemeral(where, input.user, STALE);
 }

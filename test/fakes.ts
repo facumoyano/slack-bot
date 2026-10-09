@@ -97,6 +97,7 @@ export function fakes(over: Partial<Orca> = {}) {
     poster,
     store,
     resolveRepo: async () => "r1",
+    allowedUsers: new Set(["U1", "U2"]),
     knownRepos: async () => [
       { owner: "acme", name: "api" },
       { owner: "acme", name: "web" },

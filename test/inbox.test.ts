@@ -22,7 +22,13 @@ test("a question moves the job to awaiting_answer and posts once, even when the 
   await processBatch(f.deps, [question]);
   await processBatch(f.deps, [question]);
 
-  assert.deepEqual(f.store.data.jobs[job.id].state, { kind: "awaiting_answer", questionMsgId: "m1", question: "¿Qué saludo?" });
+  assert.deepEqual(f.store.data.jobs[job.id].state, {
+    kind: "awaiting_answer",
+    questionMsgId: "m1",
+    question: "¿Qué saludo?",
+    options: ["Hola", "Buenas"],
+    postTs: "900.1",
+  });
   assert.equal(f.posts.length, 1);
   assert.match(f.posts[0], /<@U1> pregunta: ¿Qué saludo\?/);
   assert.match(f.posts[0], /Hola \/ Buenas/);
@@ -34,7 +40,7 @@ test("a thread reply answers the pending question and the job resumes", async ()
   f.store.data.jobs[job.id] = job;
   await processBatch(f.deps, [question]);
 
-  const handled = await handleThreadReply(f.deps, { channel: "C1", threadTs: "100.1", ts: "100.5", text: "Hola mundo" });
+  const handled = await handleThreadReply(f.deps, { channel: "C1", threadTs: "100.1", ts: "100.5", user: "U1", text: "Hola mundo" });
 
   assert.equal(handled, true);
   assert.deepEqual(f.calls, ["reply m1 Hola mundo"]);
@@ -340,7 +346,7 @@ test("an !aparte thread reply while awaiting an answer is ignored entirely", asy
   await processBatch(f.deps, [question]);
   const postsBefore = f.posts.length;
 
-  const handled = await handleThreadReply(f.deps, { channel: "C1", threadTs: "100.1", ts: "100.5", text: "!aparte che, ¿le decimos Hola?" });
+  const handled = await handleThreadReply(f.deps, { channel: "C1", threadTs: "100.1", ts: "100.5", user: "U1", text: "!aparte che, ¿le decimos Hola?" });
 
   assert.equal(handled, true);
   assert.deepEqual(f.calls, []);

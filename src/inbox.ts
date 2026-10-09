@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload } from "./jobs.ts";
+import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
 import { startsSettled } from "./bot.ts";
 import { readReport, slackPost } from "./report.ts";
@@ -62,7 +62,10 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
     };
     const before = findJobByDispatch(data, parsePayload(msg).dispatchId);
     const outcome = applyInboxMessage(data, msg, extras, now());
-    if (outcome?.post) await deps.poster.postToThread(outcome.job, outcome.post);
+    if (outcome?.post) {
+      const ts = await deps.poster.postToThread(outcome.job, outcome.post, outcome.blocks);
+      if (outcome.blocks && msg.type === "question") outcome.job = transition(outcome.job, { kind: "question_posted", msgId: msg.id, ts }) ?? outcome.job;
+    }
     if (outcome) commitOutcome(deps, before, outcome);
     markProcessed(data, msg.id);
     deps.store.save();
