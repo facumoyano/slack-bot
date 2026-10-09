@@ -47,8 +47,7 @@ export function buildSpec(input: SpecInput): string {
 
   return [
     "## Method",
-    "Before any other step, invoke the Skill tool with `pstack:poteto-mode` and follow the playbook that matches this task (Bug fix, Feature, Refactoring, Perf issue, and so on), ending with its Opening a PR playbook. Treat this task as a full-autonomy grant: decide the calls the playbook lets you decide and report them in the summary.",
-    "These poteto-mode steps are mandatory here and may not be skipped, even for a small diff: run `/deslop` before every commit, `/no-comments` before opening the PR, and `/technical-writing` for the PR title, description and commit messages.",
+    "Before any other step, invoke the Skill tool with `pstack:poteto-mode` and follow it exactly: its non-negotiables and every step of the playbook that matches this task (Bug fix, Feature, Refactoring, Perf issue, and so on), ending with its Opening a PR playbook. Do not skip or shortcut steps on your own judgment; a step the playbook lets you skip keeps its `skip: <reason>`, and every skip goes in the report's **Decisiones** section. Treat this task as a full-autonomy grant: decide the calls the playbook lets you decide and report them.",
     "Opening the PR with `gh pr create` is the deliverable the human asked for; it is not the out-of-band posting your preamble forbids.",
     "Wherever the playbook or a skill would ask the human (AskUserQuestion or a reply that waits for the user), use the coordinator `ask` command described under Constraints instead. The human only sees Slack.",
     "",

@@ -1,6 +1,6 @@
 {
   "branch": "main",
-  "lastCommit": "18a3102 Skip the bot's own messages when reading the thread",
-  "savedAt": "2026-10-08T22:48:55Z",
+  "lastCommit": "bb48706 Post a sectioned Markdown report rendered as Slack mrkdwn",
+  "savedAt": "2026-10-09T01:15:44Z",
   "projectDir": "/home/facu/orca/projects/slack-bot"
 }
