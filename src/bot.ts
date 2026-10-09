@@ -1,3 +1,4 @@
+import type { Block } from "./blocks.ts";
 import { helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
 import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
@@ -11,7 +12,11 @@ import type { StoreHandle } from "./store.ts";
 
 /** The only Slack surface the core needs; Bolt and the console harness both implement it. */
 export type Poster = {
-  postToThread(job: Pick<Job, "slack">, text: string): Promise<void>;
+  /** `text` is the notification fallback when `blocks` are given. Returns the message ts. */
+  postToThread(job: Pick<Job, "slack">, text: string, blocks?: Block[]): Promise<string>;
+  update(channel: string, ts: string, text: string, blocks?: Block[]): Promise<void>;
+  /** Seen only by `user`, in the job's thread. */
+  ephemeral(job: Pick<Job, "slack">, user: string, text: string): Promise<void>;
   react(channel: string, messageTs: string, name: string): Promise<void>;
   /** Starts a new thread in the channel; returns its ts. */
   postTopLevel(channel: string, text: string): Promise<string>;

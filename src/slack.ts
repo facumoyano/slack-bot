@@ -10,8 +10,16 @@ export type SlackConfig = { botToken: string; appToken: string; allowedUsers: Re
 export function createSlack(config: SlackConfig) {
   const app = new bolt.App({ token: config.botToken, appToken: config.appToken, socketMode: true });
   const poster: Poster = {
-    async postToThread(job, text) {
-      await app.client.chat.postMessage({ channel: job.slack.channel, thread_ts: job.slack.threadTs, text });
+    async postToThread(job, text, blocks) {
+      const res = await app.client.chat.postMessage({ channel: job.slack.channel, thread_ts: job.slack.threadTs, text, blocks });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      return res.ts;
+    },
+    async update(channel, ts, text, blocks) {
+      await app.client.chat.update({ channel, ts, text, blocks });
+    },
+    async ephemeral(job, user, text) {
+      await app.client.chat.postEphemeral({ channel: job.slack.channel, thread_ts: job.slack.threadTs, user, text });
     },
     async react(channel, messageTs, name) {
       await app.client.reactions.add({ channel, timestamp: messageTs, name }).catch((err) => {

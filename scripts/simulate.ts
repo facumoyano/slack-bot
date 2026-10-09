@@ -5,6 +5,7 @@ import { answerQuestion } from "../src/ask.ts";
 import { handleMention, handleThreadReply } from "../src/bot.ts";
 import { parseCommand } from "../src/commands.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
+import type { Block } from "../src/blocks.ts";
 import { runInbox } from "../src/inbox.ts";
 import { jobId } from "../src/jobs.ts";
 import { ensureRun, findRepo, knownGithubRepos, realOrca, repoIdForPath } from "../src/orca.ts";
@@ -28,9 +29,43 @@ if (!request) {
 }
 
 const ts = () => new Date().toISOString().slice(11, 19);
+let lastTs = 0;
+const nextTs = () => (lastTs = Math.max(lastTs + 0.000001, Date.now() / 1000)).toFixed(6);
+/** Which message each `:click <action> <value>` belongs to, as Slack would send it. */
+const clickable = new Map<string, string>();
+
+function showBlocks(messageTs: string, blocks: Block[] = []): string {
+  const lines: string[] = [];
+  for (const block of blocks) {
+    if (block.type !== "actions") continue;
+    for (const el of block.elements) {
+      if (el.type === "button" && el.url) lines.push(`  [${el.text.text}] → ${el.url}`);
+      else if (el.type === "button" && el.value !== undefined) {
+        clickable.set(`${el.action_id} ${el.value}`, messageTs);
+        lines.push(`  [${el.text.text}] → :click ${el.action_id} ${el.value}`);
+      } else if (el.type === "static_select") {
+        lines.push(`  [${el.placeholder?.text ?? "elegir"}]`);
+        for (const opt of el.options ?? []) {
+          clickable.set(`${el.action_id} ${opt.value}`, messageTs);
+          lines.push(`    ${opt.text.text} → :click ${el.action_id} ${opt.value}`);
+        }
+      }
+    }
+  }
+  return lines.length ? `${lines.join("\n")}\n` : "";
+}
+
 const poster: Poster = {
-  async postToThread(_job, text) {
-    console.log(`\n[${ts()}] [slack → hilo]\n${text}\n`);
+  async postToThread(_job, text, blocks) {
+    const messageTs = nextTs();
+    console.log(`\n[${ts()}] [slack → hilo, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
+    return messageTs;
+  },
+  async update(_channel, messageTs, text, blocks) {
+    console.log(`\n[${ts()}] [slack ✎ edita ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
+  },
+  async ephemeral(_job, user, text) {
+    console.log(`[${ts()}] [slack efímero solo para ${user}] ${text}`);
   },
   async react(_channel, messageTs, name) {
     console.log(`[${ts()}] [slack reacción :${name}: en ${messageTs}]`);

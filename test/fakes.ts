@@ -1,5 +1,6 @@
 import { newJob, transition } from "../src/jobs.ts";
 import type { Job } from "../src/jobs.ts";
+import type { Block } from "../src/blocks.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
 import type { InboxDeps } from "../src/inbox.ts";
 import type { Orca } from "../src/orca.ts";
@@ -10,9 +11,21 @@ export function fakes(over: Partial<Orca> = {}) {
   const specs: string[] = [];
   const reactions: string[] = [];
   const calls: string[] = [];
+  const messages: { ts: string; text: string; blocks?: Block[] }[] = [];
+  const updates: { ts: string; text: string; blocks?: Block[] }[] = [];
+  const ephemerals: string[] = [];
   const poster: Poster = {
-    async postToThread(_job, text) {
+    async postToThread(_job, text, blocks) {
       posts.push(text);
+      const ts = `900.${messages.length + 1}`;
+      messages.push({ ts, text, blocks });
+      return ts;
+    },
+    async update(_c, ts, text, blocks) {
+      updates.push({ ts, text, blocks });
+    },
+    async ephemeral(_job, user, text) {
+      ephemerals.push(`${user}: ${text}`);
     },
     async react(_c, ts, name) {
       reactions.push(`${ts}:${name}`);
@@ -96,7 +109,7 @@ export function fakes(over: Partial<Orca> = {}) {
       return "## Respuesta\nSe valida en **src/webhook.ts:12**.";
     },
   };
-  return { posts, reactions, calls, specs, store, deps, sessions, clock };
+  return { posts, messages, updates, ephemerals, reactions, calls, specs, store, deps, sessions, clock };
 }
 
 export function workingJob(): Job {
