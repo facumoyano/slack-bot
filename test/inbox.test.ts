@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { handleMention, handleThreadReply } from "../src/bot.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
 import { processBatch } from "../src/inbox.ts";
+import type { InboxDeps } from "../src/inbox.ts";
 import { newJob, transition } from "../src/jobs.ts";
 import type { InboxMessage, Job } from "../src/jobs.ts";
 import type { Orca } from "../src/orca.ts";
@@ -47,8 +48,17 @@ function fakes() {
     },
   };
   const store = memoryStore();
-  const deps: BotDeps = { orca, poster, store, resolveRepo: async () => "r1" };
-  return { posts, reactions, calls, store, deps };
+  const sessions: Record<string, string> = { "/wt/api": "sess-1" };
+  const deps: BotDeps & InboxDeps = {
+    orca,
+    poster,
+    store,
+    resolveRepo: async () => "r1",
+    async latestSession(path) {
+      return sessions[path];
+    },
+  };
+  return { posts, reactions, calls, store, deps, sessions };
 }
 
 function workingJob(): Job {
@@ -122,6 +132,18 @@ test("worker_done extracts the PR URL, reports it, and releases the worker", asy
   assert.match(f.posts[0], /^✅/);
   assert.match(f.posts[0], /\*PR:\* https:\/\/github\.com\/acme\/api\/pull\/12/);
   assert.deepEqual(f.calls, ["release d1"]);
+});
+
+test("worker_done records the worktree's newest Claude session on the job", async () => {
+  const f = fakes();
+  const job = workingJob();
+  f.store.data.jobs[job.id] = job;
+
+  await processBatch(f.deps, [
+    { id: "m5", type: "worker_done", body: "Listo\nPR: https://github.com/acme/api/pull/1", payload: JSON.stringify({ dispatchId: "d1", outcome: "succeeded" }) },
+  ]);
+
+  assert.equal(f.store.data.jobs[job.id].sessionId, "sess-1");
 });
 
 test("worker_done without a PR line falls back to the branch lookup; failed outcome posts ❌", async () => {

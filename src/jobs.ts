@@ -5,15 +5,21 @@ export type JobState =
   | { kind: "done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string }
   | { kind: "failed"; error: string };
 
+/** How the repo was found: a GitHub link or `owner/repo#n`, an exact known repo name, or Claude's guess from the thread. */
+export type RepoSource = "link" | "name" | "inferred";
+
 export type Job = {
   id: string;
   slack: { channel: string; threadTs: string; requester: string };
   repo: { owner: string; name: string; orcaRepoId: string };
+  repoSource?: RepoSource;
   issue?: { number: number; url: string };
   request: string;
   worktreeId?: string;
   taskId?: string;
   dispatchId?: string;
+  /** The last worker's Claude session, resumed by the next follow-up. */
+  sessionId?: string;
   state: JobState;
 };
 
@@ -24,8 +30,9 @@ export type JobEvent =
   | { kind: "start_failed"; error: string }
   | { kind: "question"; msgId: string; question: string }
   | { kind: "answered" }
-  | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string }
-  | { kind: "follow_up"; request: string };
+  | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
+  | { kind: "follow_up"; request: string }
+  | { kind: "superseded"; reason: string };
 
 export function jobId(channel: string, threadTs: string): string {
   return `${channel}:${threadTs}`;
@@ -64,10 +71,17 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       return { ...job, state: { kind: "working" } };
     case "worker_done":
       if (!isActive(job)) return undefined;
-      return { ...job, state: { kind: "done", outcome: ev.outcome, summary: ev.summary, prUrl: ev.prUrl } };
+      return {
+        ...job,
+        sessionId: ev.sessionId ?? job.sessionId,
+        state: { kind: "done", outcome: ev.outcome, summary: ev.summary, prUrl: ev.prUrl },
+      };
     case "follow_up":
       if (from !== "done") return undefined;
       return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, state: { kind: "starting" } };
+    case "superseded":
+      if (!isActive(job)) return undefined;
+      return { ...job, state: { kind: "failed", error: ev.reason } };
   }
 }
 
@@ -106,11 +120,14 @@ function summaryOf(msg: InboxMessage): string {
 
 export type InboxOutcome = { job: Job; post?: string; release?: string };
 
+/** What the caller read from disk or GitHub for a worker_done; ignored for other messages. */
+export type DoneExtras = { prUrlFallback?: string; report?: string; sessionId?: string };
+
 /**
  * Decides what one orchestration message means for its Job. Pure: the caller posts,
  * releases, then commits `job` and marks the message processed.
  */
-export function applyInboxMessage(store: Store, msg: InboxMessage, prUrlFallback?: string, report?: string): InboxOutcome | undefined {
+export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneExtras = {}): InboxOutcome | undefined {
   if (store.processedMsgIds.includes(msg.id)) return undefined;
   const payload = parsePayload(msg);
   const job = findJobByDispatch(store, payload.dispatchId);
@@ -129,9 +146,10 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, prUrlFallback
       return { job, post: `⚠️ ${who} el worker escaló: ${msg.subject ?? ""}\n${msg.body ?? ""}`.trim() };
     case "worker_done": {
       const outcome = payload.outcome === "succeeded" ? "succeeded" : "failed";
+      const { report, sessionId } = extras;
       const summary = report ?? summaryOf(msg);
-      const prUrl = extractPrUrl(msg.body ?? "") ?? extractPrUrl(report ?? "") ?? prUrlFallback;
-      const next = transition(job, { kind: "worker_done", outcome, summary, prUrl });
+      const prUrl = extractPrUrl(msg.body ?? "") ?? extractPrUrl(report ?? "") ?? extras.prUrlFallback;
+      const next = transition(job, { kind: "worker_done", outcome, summary, prUrl, sessionId });
       if (!next) return undefined;
       const head = outcome === "succeeded" ? `✅ ${who} terminé.` : `❌ ${who} no pude completarlo.`;
       const pr = prUrl ? `*PR:* ${prUrl}` : "No se abrió PR.";

@@ -44,6 +44,6 @@ test("worker_done posts the report with blank lines between head, body and PR", 
   };
   const store = { jobs: { [job.id]: job }, processedMsgIds: [] };
   const msg = { id: "m1", type: "worker_done", body: "hecho\nPR: https://github.com/o/r/pull/9", payload: JSON.stringify({ dispatchId: "d1", outcome: "succeeded" }) };
-  const out = applyInboxMessage(store, msg, undefined, "*Qué pasaba*\nalgo\n\n*Qué cambié*\n• cosa");
+  const out = applyInboxMessage(store, msg, { report: "*Qué pasaba*\nalgo\n\n*Qué cambié*\n• cosa" });
   assert.equal(out?.post, "✅ <@U1> terminé.\n\n*Qué pasaba*\nalgo\n\n*Qué cambié*\n• cosa\n\n*PR:* https://github.com/o/r/pull/9");
 });

@@ -7,6 +7,7 @@ import { runInbox } from "../src/inbox.ts";
 import { jobId } from "../src/jobs.ts";
 import { ensureRun, findRepo, realOrca, repoIdForPath } from "../src/orca.ts";
 import { parseTarget } from "../src/parse.ts";
+import { latestSession } from "../src/session.ts";
 import { openStore } from "../src/store.ts";
 
 const { values, positionals } = parseArgs({
@@ -58,7 +59,7 @@ stdin.on("line", (line) => {
     .catch((err) => console.error("thread reply failed:", err));
 });
 
-const inbox = runInbox({ orca: realOrca, poster, store }, finished);
+const inbox = runInbox({ orca: realOrca, poster, store, latestSession }, finished);
 await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text: request, target });
 if (!store.data.jobs[id]) process.exit(1);
 await inbox;

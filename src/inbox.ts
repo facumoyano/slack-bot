@@ -4,6 +4,7 @@ import type { InboxMessage } from "./jobs.ts";
 import { startsSettled } from "./bot.ts";
 import { readReport, toSlackMrkdwn } from "./report.ts";
 import type { Poster } from "./bot.ts";
+import { worktreePath } from "./orca.ts";
 import type { Orca } from "./orca.ts";
 import type { StoreHandle } from "./store.ts";
 
@@ -11,6 +12,7 @@ export type InboxDeps = {
   orca: Pick<Orca, "checkInbox" | "release" | "lookupPrUrl">;
   poster: Poster;
   store: StoreHandle;
+  latestSession(worktreePath: string): Promise<string | undefined>;
 };
 
 async function prFallback(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
@@ -31,12 +33,26 @@ async function renderedReport(deps: InboxDeps, msg: InboxMessage): Promise<strin
   return text.length > MAX_REPORT ? `${text.slice(0, MAX_REPORT)}…` : text;
 }
 
+async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
+  if (msg.type !== "worker_done") return undefined;
+  const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
+  if (!job?.worktreeId) return undefined;
+  return deps.latestSession(worktreePath(job.worktreeId)).catch((err) => {
+    console.error(`session lookup for ${job.id} failed:`, err);
+    return undefined;
+  });
+}
+
 /** Post first, then record the message as processed, so a crash re-posts at most once and never drops. */
 export async function processBatch(deps: InboxDeps, messages: readonly InboxMessage[]): Promise<void> {
   for (const msg of messages) {
     const data = deps.store.data;
     if (data.processedMsgIds.includes(msg.id)) continue;
-    const outcome = applyInboxMessage(data, msg, await prFallback(deps, msg), await renderedReport(deps, msg));
+    const outcome = applyInboxMessage(data, msg, {
+      prUrlFallback: await prFallback(deps, msg),
+      report: await renderedReport(deps, msg),
+      sessionId: await sessionOf(deps, msg),
+    });
     if (outcome?.post) await deps.poster.postToThread(outcome.job, outcome.post);
     if (outcome) data.jobs[outcome.job.id] = outcome.job;
     markProcessed(data, msg.id);
