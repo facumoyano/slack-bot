@@ -7,7 +7,7 @@ import { parseCommand } from "../src/commands.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
 import { runInbox } from "../src/inbox.ts";
 import { jobId } from "../src/jobs.ts";
-import { ensureRun, findRepo, realOrca, repoIdForPath } from "../src/orca.ts";
+import { ensureRun, findRepo, knownGithubRepos, realOrca, repoIdForPath } from "../src/orca.ts";
 import { parseTarget } from "../src/parse.ts";
 import { latestSession } from "../src/session.ts";
 import { openStore } from "../src/store.ts";
@@ -46,14 +46,17 @@ const text = command ? command.rest : request;
 const repoPath = values["repo-path"] ? resolve(values["repo-path"]) : undefined;
 const parsed = repoPath ? { owner: "local", name: basename(repoPath) } : parseTarget([text]);
 const target = parsed && { ...parsed, source: "link" as const };
-const resolveRepo = repoPath ? () => repoIdForPath(repoPath) : findRepo;
+const local = repoPath ? [{ owner: "local", name: basename(repoPath) }] : [];
+const resolveRepo = (owner: string, name: string) =>
+  repoPath && owner === "local" && name === basename(repoPath) ? repoIdForPath(repoPath) : findRepo(owner, name);
+const knownRepos = async () => [...local, ...(await knownGithubRepos())];
 
 const store = openStore(values.state!);
 store.data.runId = await ensureRun(store.data.runId);
 store.save();
 console.log(`[${ts()}] run ${store.data.runId}`);
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, latestSession, ask: answerQuestion };
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, latestSession, ask: answerQuestion };
 const channel = "SIM";
 const threadTs = (Date.now() / 1000).toFixed(6);
 const id = jobId(channel, threadTs);
@@ -63,7 +66,7 @@ const finished = () => {
 };
 
 console.log(`[${ts()}] [usuario USIM] @bot ${request}`);
-if (command?.name === "pregunta") {
+if (command?.name === "pregunta" || command?.name === "repo") {
   await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command.name, target });
   console.log(`[${ts()}] jobs en el hilo: ${store.data.jobs[id] ? "1" : "0"}`);
   process.exit(0);

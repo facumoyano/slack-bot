@@ -6,8 +6,10 @@ export type JobState =
   | { kind: "cancelled" }
   | { kind: "failed"; error: string };
 
-/** How the repo was found: a GitHub link or `owner/repo#n`, an exact known repo name, or Claude's guess from the thread. */
-export type RepoSource = "link" | "name" | "inferred";
+/** How the repo was found: a GitHub link or `owner/repo#n`, an exact known repo name, the channel's `!repo` default, or Claude's guess from the thread. */
+export type RepoSource = "link" | "name" | "channel" | "inferred";
+
+export type RepoRef = { owner: string; name: string };
 
 export type Job = {
   id: string;
@@ -26,7 +28,13 @@ export type Job = {
   state: JobState;
 };
 
-export type Store = { runId?: string; jobs: Record<string, Job>; processedMsgIds: string[] };
+export type Store = {
+  runId?: string;
+  jobs: Record<string, Job>;
+  processedMsgIds: string[];
+  /** Each channel's `!repo` default. */
+  channels: Record<string, RepoRef>;
+};
 
 export type JobEvent =
   | { kind: "started"; worktreeId: string; taskId: string; dispatchId: string }

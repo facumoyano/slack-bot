@@ -5,12 +5,13 @@ import type { Store } from "./jobs.ts";
 export type StoreHandle = { data: Store; save(): void };
 
 export function openStore(path: string): StoreHandle {
-  let data: Store = { jobs: {}, processedMsgIds: [] };
+  let data: Store = { jobs: {}, processedMsgIds: [], channels: {} };
   try {
     data = JSON.parse(readFileSync(path, "utf8")) as Store;
   } catch (err) {
     if ((err as { code?: string }).code !== "ENOENT") throw err;
   }
+  data.channels ??= {};
   mkdirSync(dirname(path), { recursive: true });
   const handle: StoreHandle = {
     data,
@@ -23,6 +24,6 @@ export function openStore(path: string): StoreHandle {
   return handle;
 }
 
-export function memoryStore(data: Store = { jobs: {}, processedMsgIds: [] }): StoreHandle {
+export function memoryStore(data: Store = { jobs: {}, processedMsgIds: [], channels: {} }): StoreHandle {
   return { data, save() {} };
 }

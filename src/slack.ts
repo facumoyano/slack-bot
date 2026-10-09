@@ -28,7 +28,7 @@ export function createSlack(config: SlackConfig) {
 
   const CONTEXT_LIMIT = 12000;
 
-  async function start(deps: Omit<BotDeps, "poster"> & { knownRepos(): Promise<KnownRepo[]> }): Promise<void> {
+  async function start(deps: Omit<BotDeps, "poster" | "botUserId">): Promise<void> {
     const auth = await app.client.auth.test();
     const botUserId = auth.user_id as string;
     const botId = auth.bot_id as string | undefined;
@@ -51,7 +51,7 @@ export function createSlack(config: SlackConfig) {
       const request = command ? command.rest : text;
       const mention = { channel: event.channel, threadTs, ts: event.ts, user: event.user, text: request, command: command?.name };
       const work = async () => {
-        if (command?.name === "parar" || command?.name === "ayuda") return handleMention(full, mention);
+        if (command?.name === "parar" || command?.name === "ayuda" || command?.name === "repo") return handleMention(full, mention);
         // Newest first: a link posted later in the thread (often by another bot) beats the root.
         const thread: string[][] = [];
         if (event.thread_ts) {

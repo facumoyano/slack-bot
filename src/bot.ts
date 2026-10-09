@@ -1,10 +1,10 @@
-import { helpText, parseCommand } from "./commands.ts";
+import { helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
 import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent } from "./jobs.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
-import type { FoundTarget } from "./parse.ts";
+import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { clearReport, reportPath, slackPost } from "./report.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
@@ -22,6 +22,8 @@ export type BotDeps = {
   poster: Poster;
   store: StoreHandle;
   resolveRepo(owner: string, name: string): Promise<string>;
+  /** GitHub repos Orca already has, for `!repo` and the change-repo picker. */
+  knownRepos(): Promise<KnownRepo[]>;
   latestSession(worktreePath: string): Promise<string | undefined>;
   /** Answers a question read-only from a repo checkout, as Markdown. */
   ask(o: { repoPath: string; question: string; thread?: string }): Promise<string>;
@@ -81,6 +83,8 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
       return cancel(deps, m);
     case "pregunta":
       return answer(deps, m);
+    case "repo":
+      return channelRepo(deps, m);
     case "nuevo":
       if (m.threadTs !== m.ts) return startInNewThread(deps, m);
   }
@@ -248,6 +252,40 @@ async function answer(deps: BotDeps, m: Mention): Promise<void> {
     console.error(`ask in ${jobId(m.channel, m.threadTs)} failed:`, err);
     await deps.poster.postToThread(where, `❌ no pude responder: ${errorText(err)}`);
   }
+}
+
+function knownList(repos: readonly KnownRepo[]): string {
+  return repos.length ? `Repos que conozco: ${repos.map((r) => `\`${r.owner}/${r.name}\``).join(", ")}.` : "Orca no tiene repos de GitHub cargados todavía.";
+}
+
+async function channelRepo(deps: BotDeps, m: Mention): Promise<void> {
+  const repos = await deps.knownRepos().catch((err) => {
+    console.error("listing known repos failed:", err);
+    return [];
+  });
+  const arg = parseRepoArg(m.text, repos);
+  const channels = deps.store.data.channels;
+  const current = channels[m.channel];
+  let text: string;
+  switch (arg.kind) {
+    case "show":
+      text = `${current ? `📌 repo de este canal: ${targetLabel(current)}` : "Este canal no tiene repo por defecto."}\n${knownList(repos)}`;
+      break;
+    case "clear":
+      delete channels[m.channel];
+      deps.store.save();
+      text = current ? `🗑️ saqué ${targetLabel(current)} como repo de este canal.` : "Este canal no tenía repo por defecto.";
+      break;
+    case "set":
+      channels[m.channel] = arg.repo;
+      deps.store.save();
+      text = `📌 repo de este canal: ${targetLabel(arg.repo)}`;
+      break;
+    case "unknown":
+      text = `No reconozco \`${arg.text}\` como repo. Pasame un link de GitHub, \`owner/nombre\` o el nombre exacto de un repo de Orca.\n${knownList(repos)}`;
+      break;
+  }
+  await deps.poster.postToThread(threadOf(m), text);
 }
 
 async function cancel(deps: BotDeps, m: Mention): Promise<void> {
