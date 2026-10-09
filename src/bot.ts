@@ -1,6 +1,6 @@
 import { isActive, jobId, newJob, transition } from "./jobs.ts";
 import type { Job, JobEvent } from "./jobs.ts";
-import type { Orca } from "./orca.ts";
+import type { Orca, WorkerStart } from "./orca.ts";
 import type { GithubTarget } from "./parse.ts";
 import { clearReport, reportPath } from "./report.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
@@ -109,13 +109,47 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void>
   if (!next) return;
   await deps.poster.react(m.channel, m.ts, "saluting_face");
   await deps.poster.postToThread(next, "🫡 sigo sobre el mismo worktree. Te aviso por acá.");
-  await launch(deps, next, () =>
-    deps.orca.startFollowUp({
+  const title = `${taskTitle(next)} (follow-up)`;
+  const report = reportPath(next.id);
+  await launch(deps, next, async () => {
+    if (next.sessionId) {
+      try {
+        const spec = buildSpec({ job: next, resumed: true, previousPrUrl: previous.prUrl, reportPath: report });
+        const started = await resumeSession(deps, { worktreeId, sessionId: next.sessionId, title, spec });
+        console.log(`follow-up ${next.id}: resumed Claude session ${next.sessionId}`);
+        return started;
+      } catch (err) {
+        console.error(`follow-up ${next.id}: resuming session ${next.sessionId} failed, starting a fresh worker:`, err);
+      }
+    }
+    console.log(`follow-up ${next.id}: fresh worker`);
+    return deps.orca.startFollowUp({
       worktreeId,
-      title: `${taskTitle(next)} (follow-up)`,
-      spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl, reportPath: reportPath(next.id) }),
-    }),
-  );
+      title,
+      spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl, reportPath: report }),
+    });
+  });
+}
+
+/** Reopens the previous worker's Claude session in the worktree and hands it the follow-up as a supervised worker. */
+async function resumeSession(
+  deps: BotDeps,
+  opts: { worktreeId: string; sessionId: string; title: string; spec: string },
+): Promise<WorkerStart> {
+  const handle = await deps.orca.createTerminal({
+    worktreeId: opts.worktreeId,
+    title: slug(opts.title),
+    command: `claude --dangerously-skip-permissions --resume ${opts.sessionId}`,
+  });
+  try {
+    // A long session can take more than a minute to load; one longer retry before giving up.
+    const idle = (await deps.orca.waitTuiIdle(handle, 60_000)) || (await deps.orca.waitTuiIdle(handle, 120_000));
+    if (!idle) throw new Error(`resumed Claude in ${handle} never became idle`);
+    return await deps.orca.startWorkerInTerminal({ worktreeId: opts.worktreeId, handle, title: opts.title, spec: opts.spec });
+  } catch (err) {
+    await deps.orca.closeTerminal(handle).catch((closeErr) => console.error(`closing terminal ${handle} failed:`, closeErr));
+    throw err;
+  }
 }
 
 function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {

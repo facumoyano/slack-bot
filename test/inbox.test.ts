@@ -9,8 +9,9 @@ import type { InboxMessage, Job } from "../src/jobs.ts";
 import type { Orca } from "../src/orca.ts";
 import { memoryStore } from "../src/store.ts";
 
-function fakes() {
+function fakes(over: Partial<Orca> = {}) {
   const posts: string[] = [];
+  const specs: string[] = [];
   const reactions: string[] = [];
   const calls: string[] = [];
   const poster: Poster = {
@@ -28,6 +29,7 @@ function fakes() {
     },
     async startFollowUp(o) {
       calls.push(`followup ${o.worktreeId}`);
+      specs.push(o.spec);
       return { taskId: "t2", dispatchId: "d2", worktreeId: o.worktreeId };
     },
     async createTerminal(o) {
@@ -43,6 +45,7 @@ function fakes() {
     },
     async startWorkerInTerminal(o) {
       calls.push(`resume ${o.handle}`);
+      specs.push(o.spec);
       return { taskId: "t3", dispatchId: "d3", worktreeId: o.worktreeId };
     },
     async stopWorker(id) {
@@ -68,7 +71,7 @@ function fakes() {
   const store = memoryStore();
   const sessions: Record<string, string> = { "/wt/api": "sess-1" };
   const deps: BotDeps & InboxDeps = {
-    orca,
+    orca: { ...orca, ...over },
     poster,
     store,
     resolveRepo: async () => "r1",
@@ -76,7 +79,7 @@ function fakes() {
       return sessions[path];
     },
   };
-  return { posts, reactions, calls, store, deps, sessions };
+  return { posts, reactions, calls, specs, store, deps, sessions };
 }
 
 function workingJob(): Job {
@@ -191,7 +194,7 @@ test("messages for unknown dispatches and heartbeats post nothing but are marked
   assert.deepEqual(f.store.data.processedMsgIds, ["h1", "m9"]);
 });
 
-test("mention starts a worker; a mention after done starts a follow-up on the same worktree", async () => {
+test("mention starts a worker; a mention after done resumes the worker's session on the same worktree", async () => {
   const f = fakes();
   const mention = {
     channel: "C1",
@@ -214,9 +217,9 @@ test("mention starts a worker; a mention after done starts a follow-up on the sa
 
   const job = f.store.data.jobs[id];
   assert.equal(job.state.kind, "working");
-  assert.equal(job.dispatchId, "d2");
+  assert.equal(job.dispatchId, "d3");
   assert.equal(job.request, "cambiá el título");
-  assert.ok(f.calls.includes("followup r1::/wt/api"));
+  assert.ok(f.calls.includes("resume term-1"), "resumes the session worker_done recorded");
 });
 
 test("mention with no target asks for the link and starts nothing", async () => {
@@ -225,4 +228,71 @@ test("mention with no target asks for the link and starts nothing", async () => 
   assert.deepEqual(f.calls, []);
   assert.equal(Object.keys(f.store.data.jobs).length, 0);
   assert.match(f.posts[0], /Pasame el link del issue/);
+});
+
+function doneJob(sessionId?: string): Job {
+  const done = transition(workingJob(), {
+    kind: "worker_done",
+    outcome: "failed",
+    summary: "Memoricé la palabra.",
+    prUrl: "https://github.com/acme/api/pull/1",
+    sessionId,
+  })!;
+  return done;
+}
+
+const followUpMention = { channel: "C1", threadTs: "100.1", ts: "100.9", user: "U1", text: "¿cuál era la palabra?" };
+
+test("a follow-up on a job with a session resumes that exact session with a resumed spec", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
+
+  await handleMention(f.deps, followUpMention);
+
+  const job = f.store.data.jobs["C1:100.1"];
+  assert.deepEqual(f.calls, ["terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
+  assert.match(f.specs[0], /continuing your own previous work on this request, in this same Claude session/);
+  assert.equal(job.state.kind, "working");
+  assert.equal(job.dispatchId, "d3");
+  assert.equal(job.request, "¿cuál era la palabra?");
+});
+
+test("when the resumed session cannot take the task, its terminal is closed and a fresh follow-up starts", async () => {
+  const f = fakes({
+    async startWorkerInTerminal() {
+      throw new Error("terminal not ready");
+    },
+  });
+  f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
+
+  await handleMention(f.deps, followUpMention);
+
+  assert.deepEqual(f.calls.slice(1), ["wait term-1", "close term-1", "followup r1::/wt/api"]);
+  assert.match(f.specs[0], /BEGIN PREVIOUS SUMMARY[\s\S]*Memoricé la palabra/);
+  assert.equal(f.store.data.jobs["C1:100.1"].dispatchId, "d2");
+});
+
+test("a resumed Claude that never goes idle gets one longer wait, then the fresh follow-up", async () => {
+  const waits: number[] = [];
+  const f = fakes({
+    async waitTuiIdle(_h, ms) {
+      waits.push(ms);
+      return false;
+    },
+  });
+  f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
+
+  await handleMention(f.deps, followUpMention);
+
+  assert.deepEqual(waits, [60_000, 120_000]);
+  assert.deepEqual(f.calls.slice(1), ["close term-1", "followup r1::/wt/api"]);
+});
+
+test("a follow-up without a recorded session starts a fresh worker", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = doneJob();
+
+  await handleMention(f.deps, followUpMention);
+
+  assert.deepEqual(f.calls, ["followup r1::/wt/api"]);
 });
