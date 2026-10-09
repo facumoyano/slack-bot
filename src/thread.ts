@@ -144,7 +144,7 @@ export function userLabel(u: SlackUser): string {
   return u.displayName || u.realName || u.name || u.id;
 }
 
-const USER_ID = /^[UW][A-Z0-9]+$/;
+const USER_ID = /^[UW][A-Z0-9]{8,}$/;
 
 /** A Slack user by id, or by `name`, display name or real name: exact match first, then a unique prefix; people before bots. */
 export function matchUser(users: readonly SlackUser[], query: string): SlackUser {
@@ -175,6 +175,11 @@ export function selectMessages(messages: readonly ThreadMsg[], self: Self, o: { 
   return messages
     .filter((m) => Number(m.ts) > after && (o.all || !own(m)) && (o.from === undefined || m.user === o.from))
     .sort((a, b) => Number(a.ts) - Number(b.ts));
+}
+
+function labelOf(users: readonly SlackUser[], id: string): string {
+  const user = users.find((u) => u.id === id);
+  return user ? userLabel(user) : id;
 }
 
 export function formatMessage(m: ThreadMsg, users: readonly SlackUser[]): string {
@@ -278,14 +283,14 @@ export async function run(cmd: Command, deps: RunDeps): Promise<number> {
     case "wait": {
       const [self, from] = await Promise.all([api.self(), resolveUser(cmd.from)]);
       const since = cmd.since ?? nowTs(deps.clock.now());
-      out(`esperando a ${from} desde ${since} (hasta ${cmd.timeoutMinutes} min)…`);
+      const who = labelOf(await allUsers(), from);
+      out(`esperando a ${who} desde ${since} (hasta ${cmd.timeoutMinutes} min)…`);
       const found = await waitForReply(api, { thread, self, from, since, timeoutMs: cmd.timeoutMinutes * 60_000 }, deps.clock);
       if (!found) {
-        out(`sin respuesta de ${from} en ${cmd.timeoutMinutes} min`);
+        out(`sin respuesta de ${who} en ${cmd.timeoutMinutes} min`);
         return EXIT_TIMEOUT;
       }
-      const known = await allUsers();
-      for (const m of found) out(formatMessage(m, known));
+      for (const m of found) out(formatMessage(m, await allUsers()));
       return 0;
     }
   }

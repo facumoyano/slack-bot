@@ -16,7 +16,7 @@ node --env-file=/home/facu/orca/projects/slack-bot/.env /home/facu/orca/projects
 ```
 
 - `--to <nombre|@nombre|Uxxxx>` mentions a person; repeat it for several. Names match Slack's username, display name or real name.
-- `--text "<texto>"` for one line; for anything longer, write the Markdown to a file and pass `--text-file <ruta>`.
+- `--text "<texto>"` for a short message; for anything longer, write the Markdown to a file and pass `--text-file <ruta>`.
 - `--file <ruta>` attaches a file; repeat it for several.
 - `--dry-run` prints the message without posting it. Use it when unsure who a name resolves to.
 - It prints the ts and permalink of each posted message. Keep the ts to read the answers that came after it.

@@ -54,7 +54,8 @@ const people = [
 ];
 
 test("users resolve by id, @name, display or real name, ignoring case and accents", () => {
-  assert.equal(matchUser(people, "U9ZZZ").id, "U9ZZZ");
+  assert.equal(matchUser(people, "U0ABCDEF12").id, "U0ABCDEF12");
+  assert.throws(() => matchUser(people, "UX"), /no encontré a "UX"/);
   assert.equal(matchUser(people, "@salva").id, "U1");
   assert.equal(matchUser(people, "SALVA").id, "U1");
   assert.equal(matchUser(people, "nora").id, "U2");
@@ -153,7 +154,7 @@ test("post mentions the --to users first, renders Markdown as mrkdwn, uploads fi
 test("a long post is split into several messages on line breaks, losing nothing", async () => {
   const lines = Array.from({ length: 2000 }, (_, i) => `- línea ${i} ${"x".repeat(40)}`);
   const { api, posted } = fakeApi();
-  await runWith(["post", "--to", "U1", "--text", lines.join("\n")], api);
+  await runWith(["post", "--to", "salva", "--text", lines.join("\n")], api);
   assert.ok(posted.length > 1, `${posted.length} messages`);
   assert.ok(posted.every((p) => p.text.length <= 39_000));
   assert.equal(posted.map((p) => p.text).join("\n"), `<@U1>\n${lines.map((l) => l.replace(/^- /, "• ")).join("\n")}`);
@@ -185,7 +186,7 @@ test("read lists people's messages oldest first with names and files, the bot's 
   ];
   const { out } = await runWith(["read", "--since", "100.5"], fakeApi([replies]).api);
   assert.equal(out, "hilo: C1:100.000001\n[102.0] Salva: me parece bien\n📎 nota.pdf\n[103.0] Nora: a mí también");
-  const all = await runWith(["read", "--all", "--from", "UBOT"], fakeApi([replies]).api);
+  const all = await runWith(["read", "--all"], fakeApi([replies]).api);
   assert.match(all.out, /listo, PR abierto/);
 });
 
@@ -209,7 +210,7 @@ test("wait defaults since to now and times out with exit code 2", async () => {
   const { code, out } = await runWith(["wait", "--from", "salva", "--timeout", "1"], fake.api, clock);
   assert.equal(code, EXIT_TIMEOUT);
   assert.equal(clock.slept.reduce((a, b) => a + b, 0), 60_000);
-  assert.match(out, /sin respuesta de U1 en 1 min/);
+  assert.match(out, /sin respuesta de Salva en 1 min/);
 });
 
 test("waitForReply stops polling at the deadline even when it falls between polls", async () => {
