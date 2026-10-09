@@ -5,7 +5,7 @@ import type { Job, JobEvent } from "./jobs.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import type { FoundTarget } from "./parse.ts";
-import { clearReport, reportPath } from "./report.ts";
+import { clearReport, reportPath, slackPost } from "./report.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
 
@@ -23,6 +23,8 @@ export type BotDeps = {
   store: StoreHandle;
   resolveRepo(owner: string, name: string): Promise<string>;
   latestSession(worktreePath: string): Promise<string | undefined>;
+  /** Answers a question read-only from a repo checkout, as Markdown. */
+  ask(o: { repoPath: string; question: string; thread?: string }): Promise<string>;
   botUserId?: string;
 };
 
@@ -77,6 +79,8 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
       return deps.poster.postToThread(threadOf(m), helpText());
     case "parar":
       return cancel(deps, m);
+    case "pregunta":
+      return answer(deps, m);
     case "nuevo":
       if (m.threadTs !== m.ts) return startInNewThread(deps, m);
   }
@@ -221,6 +225,28 @@ async function resumeSession(
   } catch (err) {
     await deps.orca.closeTerminal(handle).catch((closeErr) => console.error(`closing terminal ${handle} failed:`, closeErr));
     throw err;
+  }
+}
+
+/** Ask mode: no Job, worktree or PR, and an existing job in the thread is left alone. */
+async function answer(deps: BotDeps, m: Mention): Promise<void> {
+  const where = threadOf(m);
+  if (!m.text) {
+    await deps.poster.postToThread(where, "Escribí la pregunta después del comando: `!pregunta ¿dónde se valida el token?`");
+    return;
+  }
+  if (!m.target) {
+    await deps.poster.postToThread(where, `<@${m.user}> no sé de qué repo es la pregunta. Nombrá el repo (o pasá un link de GitHub) en este hilo y preguntame de nuevo.`);
+    return;
+  }
+  await deps.poster.react(m.channel, m.ts, "eyes");
+  try {
+    const repoPath = await deps.orca.repoPath(await deps.resolveRepo(m.target.owner, m.target.name));
+    const text = await deps.ask({ repoPath, question: m.text, thread: m.context });
+    await deps.poster.postToThread(where, slackPost(text));
+  } catch (err) {
+    console.error(`ask in ${jobId(m.channel, m.threadTs)} failed:`, err);
+    await deps.poster.postToThread(where, `❌ no pude responder: ${errorText(err)}`);
   }
 }
 

@@ -195,6 +195,12 @@ export async function repoIdForPath(path: string): Promise<string> {
   return repo.id;
 }
 
+export async function repoPath(repoId: string): Promise<string> {
+  const { repo } = await orca(["repo", "show", "--repo", `id:${repoId}`]);
+  if (typeof repo?.path !== "string") throw new OrcaError("bad_output", `repo show ${repoId} returned no path`);
+  return repo.path;
+}
+
 export function worktreePath(worktreeId: string): string {
   return worktreeId.slice(worktreeId.indexOf("::") + 2);
 }
@@ -232,6 +238,7 @@ export type Orca = {
   release: typeof release;
   lookupPrUrl: typeof lookupPrUrl;
   currentBranch: typeof currentBranch;
+  repoPath: typeof repoPath;
 };
 
 export const realOrca: Orca = {
@@ -248,4 +255,5 @@ export const realOrca: Orca = {
   release,
   lookupPrUrl,
   currentBranch,
+  repoPath,
 };

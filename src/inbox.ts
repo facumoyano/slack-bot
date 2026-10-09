@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
 import { startsSettled } from "./bot.ts";
-import { readReport, toSlackMrkdwn } from "./report.ts";
+import { readReport, slackPost } from "./report.ts";
 import type { Poster } from "./bot.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca } from "./orca.ts";
@@ -23,15 +23,12 @@ async function prFallback(deps: InboxDeps, msg: InboxMessage): Promise<string | 
   return deps.orca.lookupPrUrl(job.worktreeId, job.repo.owner, job.repo.name);
 }
 
-const MAX_REPORT = 3500;
-
 async function renderedReport(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
   if (msg.type !== "worker_done") return undefined;
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
   const report = job && (await readReport(job.id));
   if (!report) return undefined;
-  const text = toSlackMrkdwn(report.replace(/^\s*\**PR:?\**:?\s*\S+\s*$/gim, "").trim());
-  return text.length > MAX_REPORT ? `${text.slice(0, MAX_REPORT)}…` : text;
+  return slackPost(report.replace(/^\s*\**PR:?\**:?\s*\S+\s*$/gim, "").trim());
 }
 
 async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {

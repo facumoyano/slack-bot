@@ -22,6 +22,14 @@ function inline(line: string): string {
     .replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_, a, b) => `*${a ?? b}*`);
 }
 
+const MAX_POST = 3500;
+
+/** Agent Markdown as a Slack post, cut to fit one message. */
+export function slackPost(markdown: string): string {
+  const text = toSlackMrkdwn(markdown);
+  return text.length > MAX_POST ? `${text.slice(0, MAX_POST)}…` : text;
+}
+
 /** Markdown as agents write it, rendered with Slack's mrkdwn dialect. Code fences pass through untouched. */
 export function toSlackMrkdwn(markdown: string): string {
   let inFence = false;

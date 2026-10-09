@@ -74,6 +74,10 @@ function fakes(over: Partial<Orca> = {}) {
     async currentBranch() {
       return "api-issue-5";
     },
+    async repoPath(id) {
+      calls.push(`repo-path ${id}`);
+      return "/repos/api";
+    },
   };
   const store = memoryStore();
   const sessions: Record<string, string> = { "/wt/api": "sess-1" };
@@ -86,6 +90,10 @@ function fakes(over: Partial<Orca> = {}) {
     resolveRepo: async () => "r1",
     async latestSession(path) {
       return sessions[path];
+    },
+    async ask(o) {
+      calls.push(`ask ${o.repoPath} ${o.question}`);
+      return "## Respuesta\nSe valida en **src/webhook.ts:12**.";
     },
   };
   return { posts, reactions, calls, specs, store, deps, sessions, clock };
@@ -593,4 +601,42 @@ test("a status for a job that is no longer active is ignored, and so is its held
   assert.equal(f.posts[0], "⏳ Reproduje el bug.");
   assert.match(f.posts[1], /^✅/);
   assert.ok(f.store.data.processedMsgIds.includes("s3"));
+});
+
+const askMention = {
+  channel: "C1",
+  threadTs: "100.1",
+  ts: "100.8",
+  user: "U1",
+  text: "¿dónde se valida el token?",
+  command: "pregunta" as const,
+  target: { owner: "acme", name: "api", source: "link" as const },
+};
+
+test("!pregunta answers in the thread from the repo checkout without creating or touching a job", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await handleMention(f.deps, askMention);
+
+  assert.deepEqual(f.calls, ["repo-path r1", "ask /repos/api ¿dónde se valida el token?"]);
+  assert.deepEqual(f.reactions, ["100.8:eyes"]);
+  assert.deepEqual(f.posts, ["*Respuesta*\nSe valida en *src/webhook.ts:12*."]);
+  assert.deepEqual(Object.keys(f.store.data.jobs), ["C1:100.1"]);
+  assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "working");
+});
+
+test("!pregunta with no repo asks for one, and a failed answer says why", async () => {
+  const f = fakes({
+    async repoPath() {
+      throw new Error("repo gone");
+    },
+  });
+
+  await handleMention(f.deps, { ...askMention, target: undefined });
+  assert.match(f.posts[0], /no sé de qué repo es la pregunta/);
+
+  await handleMention(f.deps, askMention);
+  assert.equal(f.posts[1], "❌ no pude responder: repo gone");
+  assert.deepEqual(f.store.data.jobs, {});
 });

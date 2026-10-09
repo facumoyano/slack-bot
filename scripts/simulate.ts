@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { answerQuestion } from "../src/ask.ts";
 import { handleMention, handleThreadReply } from "../src/bot.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
 import { runInbox } from "../src/inbox.ts";
@@ -48,7 +49,7 @@ store.data.runId = await ensureRun(store.data.runId);
 store.save();
 console.log(`[${ts()}] run ${store.data.runId}`);
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, latestSession };
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, latestSession, ask: answerQuestion };
 const channel = "SIM";
 const threadTs = (Date.now() / 1000).toFixed(6);
 const id = jobId(channel, threadTs);
