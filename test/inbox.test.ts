@@ -192,6 +192,7 @@ test("when the resumed session cannot take the task, its terminal is closed and 
   assert.deepEqual(f.calls.slice(1), ["wait term-1", "close term-1", "followup r1::/wt/api"]);
   assert.match(f.specs[0], /BEGIN PREVIOUS SUMMARY[\s\S]*Memoricé la palabra/);
   assert.equal(f.store.data.jobs["C1:100.1"].dispatchId, "d2");
+  assert.ok(f.posts.some((p) => p.startsWith("⚠️ no pude retomar la sesión anterior")), "the thread is told the session was not resumed");
 });
 
 test("a resumed Claude that never goes idle gets one longer wait, then the fresh follow-up", async () => {

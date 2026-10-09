@@ -59,7 +59,7 @@ test("a plain mention after an investigation resumes the same session as a chang
   assert.equal(job.mode, "change");
   assert.equal(job.request, "ahora arreglalo");
   assert.ok(f.calls.includes("terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1"), "resumes the investigation's session");
-  assert.equal(f.posts.at(-1), "🫡 sigo sobre el mismo worktree. Te aviso por acá.");
+  assert.equal(f.posts.at(-1), "🫡 sigo en la misma sesión, me acuerdo de lo que hice en este hilo. Te aviso por acá.");
   const spec = f.specs.at(-1)!;
   assert.match(spec, /continuing your own previous work/);
   assert.match(spec, /This spec replaces your previous run's spec/);
@@ -74,7 +74,7 @@ test("the command on a follow-up picks that run's mode", async () => {
 
   await handleMention(f.deps, mention({ ts: "100.9", text: "¿se puede romper otra cosa?", command: "investiga" }));
   assert.equal(f.store.data.jobs["C1:100.1"].mode, "investigate");
-  assert.equal(f.posts.at(-1), "🔎 investigo sobre el mismo worktree…");
+  assert.equal(f.posts.at(-1), "🔎 investigo en la misma sesión, me acuerdo de lo que hice en este hilo…");
   assert.match(f.specs.at(-1)!, /Investigation playbook/);
 
   await processBatch(f.deps, [{ ...done("m2", "No."), payload: JSON.stringify({ dispatchId: "d3", outcome: "succeeded" }) }]);

@@ -220,17 +220,21 @@ function startJob(deps: BotDeps, m: Mention, mode: Mode, intro?: string): Promis
   return p;
 }
 
+const SAME_SESSION = "en la misma sesión, me acuerdo de lo que hice en este hilo";
+
 const START_TEXT: Record<Mode, { first(label: string, issue: boolean, guessed: string): string; followUp: string }> = {
   change: {
     first: (label, issue, guessed) => `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`,
-    followUp: "🫡 sigo sobre el mismo worktree. Te aviso por acá.",
+    followUp: `🫡 sigo ${SAME_SESSION}. Te aviso por acá.`,
   },
-  investigate: { first: (label, _issue, guessed) => `🔎 investigo en ${label}${guessed}…`, followUp: "🔎 investigo sobre el mismo worktree…" },
+  investigate: { first: (label, _issue, guessed) => `🔎 investigo en ${label}${guessed}…`, followUp: `🔎 investigo ${SAME_SESSION}…` },
   plan: {
     first: (label, _issue, guessed) => `📋 armo un plan en ${label}${guessed}, te lo muestro antes de tocar código.`,
-    followUp: "📋 armo un plan sobre el mismo worktree, te lo muestro antes de tocar código.",
+    followUp: `📋 armo un plan ${SAME_SESSION}; te lo muestro antes de tocar código.`,
   },
 };
+
+const FRESH_FOLLOW_UP = "⚠️ no pude retomar la sesión anterior: sigo con un worker nuevo en el mismo worktree, que arranca del resumen de lo que se hizo.";
 
 function runPaths(deps: BotDeps, id: string) {
   return { reportPath: reportPath(id), planPath: planPath(id), outbox: outboxDir(deps.filesRoot, id) };
@@ -305,6 +309,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode): P
       }
     }
     console.log(`follow-up ${next.id}: fresh worker`);
+    await deps.poster.postToThread(next, FRESH_FOLLOW_UP).catch(() => {});
     return deps.orca.startFollowUp({
       worktreeId,
       title,
