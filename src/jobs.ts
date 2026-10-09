@@ -21,6 +21,12 @@ export type RepoSource = "link" | "name" | "channel" | "inferred";
 
 export type RepoRef = { owner: string; name: string };
 
+/** What a worker run delivers: a PR, a cited report with no PR, or a PR after the human approves a plan. */
+export type Mode = "change" | "investigate" | "plan";
+
+/** The options of a plan-mode approval question. */
+export const PLAN_OPTIONS = { approve: "Aprobar", change: "Cambiar" } as const;
+
 export type Job = {
   id: string;
   slack: { channel: string; threadTs: string; requester: string };
@@ -28,6 +34,8 @@ export type Job = {
   repoSource?: RepoSource;
   issue?: { number: number; url: string };
   request: string;
+  /** The current run's mode; each follow-up picks its own. */
+  mode: Mode;
   worktreeId?: string;
   taskId?: string;
   dispatchId?: string;
@@ -56,7 +64,7 @@ export type JobEvent =
   | { kind: "answered" }
   | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
   | { kind: "cancelled"; sessionId?: string }
-  | { kind: "follow_up"; request: string }
+  | { kind: "follow_up"; request: string; mode: Mode }
   | { kind: "superseded"; reason: string };
 
 export function jobId(channel: string, threadTs: string): string {
@@ -131,7 +139,16 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       return { ...job, sessionId: ev.sessionId ?? job.sessionId, state: { kind: "cancelled" } };
     case "follow_up":
       if (from !== "done" && from !== "cancelled") return undefined;
-      return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, progress: undefined, startMsg: undefined, state: { kind: "starting" } };
+      return {
+        ...job,
+        request: ev.request,
+        mode: ev.mode,
+        taskId: undefined,
+        dispatchId: undefined,
+        progress: undefined,
+        startMsg: undefined,
+        state: { kind: "starting" },
+      };
     case "superseded":
       if (!isActive(job)) return undefined;
       return { ...job, state: { kind: "failed", error: ev.reason } };

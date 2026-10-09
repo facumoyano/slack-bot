@@ -39,6 +39,7 @@ test("worker_done posts the report with blank lines between head, body and PR", 
     slack: { channel: "C1", threadTs: "1.2", requester: "U1" },
     repo: { owner: "o", name: "r", orcaRepoId: "id" },
     request: "x",
+    mode: "change" as const,
     dispatchId: "d1",
     state: { kind: "working" as const },
   };

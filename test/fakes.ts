@@ -138,6 +138,7 @@ export function workingJob(): Job {
     repo: { owner: "acme", name: "api", orcaRepoId: "r1" },
     issue: { number: 5, url: "https://github.com/acme/api/issues/5" },
     request: "arreglalo",
+    mode: "change",
   });
   return transition(job, { kind: "started", worktreeId: "r1::/wt/api", taskId: "t1", dispatchId: "d1" })!;
 }

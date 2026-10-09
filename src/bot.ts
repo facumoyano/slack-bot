@@ -1,16 +1,16 @@
 import { answeredMessage, plainMessage, startMessage } from "./blocks.ts";
 import type { Block, Click } from "./blocks.ts";
-import { helpText, parseCommand, parseRepoArg } from "./commands.ts";
+import { commandMode, helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
 import { mkdir } from "node:fs/promises";
 import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
 import type { LocalFile } from "./files.ts";
 import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
-import type { Job, JobEvent, RepoRef } from "./jobs.ts";
+import type { Job, JobEvent, Mode, RepoRef } from "./jobs.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
-import { clearReport, reportPath, slackPost } from "./report.ts";
+import { clearReports, planPath, reportPath, slackPost } from "./report.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
 
@@ -132,6 +132,7 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
       if (m.threadTs !== m.ts) return startInNewThread(deps, m);
   }
   const id = jobId(m.channel, m.threadTs);
+  const mode = commandMode(m.command);
   const existing = deps.store.data.jobs[id];
   if (existing && m.command !== "nuevo" && m.ownTarget && isOtherTask(existing, m.ownTarget)) {
     if (isActive(existing) && isGuessedRepo(existing) && !sameRepo(existing, m.ownTarget)) {
@@ -140,9 +141,9 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
     return replyOtherTask(deps, existing, m.ownTarget);
   }
   if (existing && isActive(existing)) return handleThreadInput(deps, existing, m, { onlyFresh: true });
-  if (existing && isResumable(existing)) return startFollowUp(deps, existing, m);
+  if (existing && isResumable(existing)) return startFollowUp(deps, existing, m, mode);
   if (starting.has(id)) return;
-  return startJob(deps, m);
+  return startJob(deps, m, mode);
 }
 
 /** A repo nobody named for this job, so naming another one corrects it instead of opening a separate task. */
@@ -162,7 +163,7 @@ async function startInNewThread(deps: BotDeps, m: Mention): Promise<void> {
   const asked = `🆕 <@${m.user}> pidió una tarea aparte desde otro hilo${m.text ? `:\n${quote(m.text)}` : "."}`;
   const threadTs = await deps.poster.postTopLevel(m.channel, asked);
   await deps.poster.postToThread(threadOf(m), "🆕 la sigo en un hilo aparte.");
-  return startJob(deps, { ...m, threadTs });
+  return startJob(deps, { ...m, threadTs }, "change");
 }
 
 async function replyOtherTask(deps: BotDeps, job: Job, target: FoundTarget): Promise<void> {
@@ -176,7 +177,7 @@ async function correctRepo(deps: BotDeps, job: Job, m: Mention, target: FoundTar
   if (job.state.kind === "starting") await startsSettled();
   const current = deps.store.data.jobs[job.id] ?? job;
   const label = targetLabel(target);
-  const redo = () => startJob(deps, { ...m, user: current.slack.requester, text: current.request, target }, `🔁 cambio a ${label}.`);
+  const redo = () => startJob(deps, { ...m, user: current.slack.requester, text: current.request, target }, current.mode, `🔁 cambio a ${label}.`);
   if (current.state.kind === "failed") return redo();
   if (!isActive(current) || !current.dispatchId) return;
   try {
@@ -212,14 +213,30 @@ export async function retireStart(deps: Pick<BotDeps, "poster">, before: Job | u
   await retireButtons(deps, before.slack.channel, before.startMsg);
 }
 
-function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
+function startJob(deps: BotDeps, m: Mention, mode: Mode, intro?: string): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
-  const p = startJobOnce(deps, m, intro).finally(() => starting.delete(id));
+  const p = startJobOnce(deps, m, mode, intro).finally(() => starting.delete(id));
   starting.set(id, p);
   return p;
 }
 
-async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
+const START_TEXT: Record<Mode, { first(label: string, issue: boolean, guessed: string): string; followUp: string }> = {
+  change: {
+    first: (label, issue, guessed) => `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`,
+    followUp: "🫡 sigo sobre el mismo worktree. Te aviso por acá.",
+  },
+  investigate: { first: (label, _issue, guessed) => `🔎 investigo en ${label}${guessed}…`, followUp: "🔎 investigo sobre el mismo worktree…" },
+  plan: {
+    first: (label, _issue, guessed) => `📋 armo un plan en ${label}${guessed}, te lo muestro antes de tocar código.`,
+    followUp: "📋 armo un plan sobre el mismo worktree, te lo muestro antes de tocar código.",
+  },
+};
+
+function runPaths(deps: BotDeps, id: string) {
+  return { reportPath: reportPath(id), planPath: planPath(id), outbox: outboxDir(deps.filesRoot, id) };
+}
+
+async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: string): Promise<void> {
   const where = threadOf(m);
   if (!m.target) {
     await deps.poster.postToThread(
@@ -235,7 +252,7 @@ async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<
     source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : source === "channel" ? " (repo del canal)" : "";
   await deps.poster.react(m.channel, m.ts, "saluting_face");
   const picker = source === "inferred" || source === "channel" ? { current: { owner, name }, repos: await knownReposOrNone(deps) } : undefined;
-  const startMsg = await postStart(deps, where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`, picker);
+  const startMsg = await postStart(deps, where, intro ?? START_TEXT[mode].first(label, issue !== undefined, guessed), picker);
   let orcaRepoId: string;
   try {
     orcaRepoId = await deps.resolveRepo(owner, name);
@@ -244,7 +261,7 @@ async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<
     await deps.poster.postToThread(where, `❌ <@${m.user}> no pude preparar el repo ${owner}/${name}: ${errorText(err)}`);
     return;
   }
-  const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text, startMsg });
+  const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text, mode, startMsg });
   deps.store.data.jobs[job.id] = job;
   deps.store.save();
   const files = await bringFiles(deps, where, m.files);
@@ -253,21 +270,21 @@ async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<
       repoId: orcaRepoId,
       name: slug(`${name}-${issue ? `issue-${issue.number}` : "slack"}-${m.threadTs.replace(".", "").slice(-8)}`),
       title: taskTitle(job),
-      spec: buildSpec({ job, context: m.context, files, reportPath: reportPath(job.id), outbox: outboxDir(deps.filesRoot, job.id) }),
+      spec: buildSpec({ job, context: m.context, files, ...runPaths(deps, job.id) }),
     }),
   );
 }
 
 const CANCELLED_SUMMARY = "The user cancelled the previous worker before it finished. Its work so far is whatever is committed or left uncommitted in this worktree.";
 
-async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void> {
+async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode): Promise<void> {
   if (!isResumable(job) || !job.worktreeId) return;
   const previous = job.state.kind === "done" ? job.state : { summary: CANCELLED_SUMMARY, prUrl: undefined };
   const worktreeId = job.worktreeId;
-  const next = commit(deps, job, { kind: "follow_up", request: m.text });
+  const next = commit(deps, job, { kind: "follow_up", request: m.text, mode });
   if (!next) return;
   await deps.poster.react(m.channel, m.ts, "saluting_face");
-  const startMsg = await postStart(deps, next, "🫡 sigo sobre el mismo worktree. Te aviso por acá.");
+  const startMsg = await postStart(deps, next, START_TEXT[mode].followUp);
   const current = deps.store.data.jobs[next.id];
   if (current === next) {
     deps.store.data.jobs[next.id] = { ...next, startMsg };
@@ -275,7 +292,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void>
   }
   const title = `${taskTitle(next)} (follow-up)`;
   const files = (await bringFiles(deps, next, m.files)).filter((f) => f.fresh);
-  const paths = { files, reportPath: reportPath(next.id), outbox: outboxDir(deps.filesRoot, next.id) };
+  const paths = { files, ...runPaths(deps, next.id) };
   await launch(deps, next, async () => {
     if (next.sessionId) {
       try {
@@ -417,7 +434,7 @@ function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWork
 
 async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
   try {
-    await clearReport(job.id);
+    await clearReports(job.id);
     await mkdir(outboxDir(deps.filesRoot, job.id), { recursive: true });
     const w = await start();
     commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId });
