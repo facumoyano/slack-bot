@@ -2,6 +2,9 @@ import { answeredMessage, plainMessage, startMessage } from "./blocks.ts";
 import type { Block, Click } from "./blocks.ts";
 import { helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
+import { mkdir } from "node:fs/promises";
+import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
+import type { LocalFile } from "./files.ts";
 import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent, RepoRef } from "./jobs.ts";
 import { worktreePath } from "./orca.ts";
@@ -21,6 +24,8 @@ export type Poster = {
   react(channel: string, messageTs: string, name: string): Promise<void>;
   /** Starts a new thread in the channel; returns its ts. */
   postTopLevel(channel: string, text: string): Promise<string>;
+  /** Uploads one local file into the job's thread. */
+  uploadFile(job: Pick<Job, "slack">, path: string): Promise<void>;
 };
 
 export type BotDeps = {
@@ -34,8 +39,12 @@ export type BotDeps = {
   /** Who may start work and click buttons. */
   allowedUsers: ReadonlySet<string>;
   /** Answers a question read-only from a repo checkout, as Markdown. */
-  ask(o: { repoPath: string; question: string; thread?: string }): Promise<string>;
+  ask(o: { repoPath: string; question: string; thread?: string; files?: readonly LocalFile[] }): Promise<string>;
   botUserId?: string;
+  /** Where each job's `in/` and `out/` folders live. */
+  filesRoot: string;
+  /** A GET of a Slack file URL, authenticated as the bot. */
+  fetchFile(url: string): Promise<Response>;
 };
 
 export type Mention = {
@@ -51,12 +60,14 @@ export type Mention = {
   ownTarget?: FoundTarget;
   /** The mention started with this command; `text` is what follows it. */
   command?: CommandName;
+  /** Slack file objects of the mention and the thread's earlier human messages. */
+  files?: readonly unknown[];
 };
 
-export type ThreadReply = { channel: string; threadTs: string; ts: string; user: string; text: string };
+export type ThreadReply = { channel: string; threadTs: string; ts: string; user: string; text: string; files?: readonly unknown[] };
 
 /** A validated button or select click, located by the message it came from. */
-export type ClickInput = { click: Click; user: string; channel: string; threadTs: string; messageTs: string; context?: string };
+export type ClickInput = { click: Click; user: string; channel: string; threadTs: string; messageTs: string; context?: string; files?: readonly unknown[] };
 
 /** Thread jobs whose first start is still resolving the repo, before the job exists in the store. */
 const starting = new Map<string, Promise<void>>();
@@ -92,6 +103,19 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Brings Slack files into the thread's inbox folder and tells the thread about any it could not bring. */
+async function bringFiles(deps: BotDeps, where: Pick<Job, "slack">, raw: readonly unknown[] = []): Promise<LocalFile[]> {
+  if (!raw.length) return [];
+  const { files, skipped } = selectFiles(raw);
+  const got = await downloadFiles(inboxDir(deps.filesRoot, jobId(where.slack.channel, where.slack.threadTs)), files, deps.fetchFile);
+  const notice = problemsNotice([...skipped, ...got.failed]);
+  if (notice) {
+    console.error(`files in ${jobId(where.slack.channel, where.slack.threadTs)}: ${notice}`);
+    await deps.poster.postToThread(where, notice).catch((err) => console.error("posting the files notice failed:", err));
+  }
+  return got.files;
+}
+
 export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
   switch (m.command) {
     case "aparte":
@@ -115,7 +139,7 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
     }
     return replyOtherTask(deps, existing, m.ownTarget);
   }
-  if (existing && isActive(existing)) return handleThreadInput(deps, existing, m);
+  if (existing && isActive(existing)) return handleThreadInput(deps, existing, m, { onlyFresh: true });
   if (existing && isResumable(existing)) return startFollowUp(deps, existing, m);
   if (starting.has(id)) return;
   return startJob(deps, m);
@@ -223,12 +247,13 @@ async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<
   const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text, startMsg });
   deps.store.data.jobs[job.id] = job;
   deps.store.save();
+  const files = await bringFiles(deps, where, m.files);
   await launch(deps, job, () =>
     deps.orca.startWorker({
       repoId: orcaRepoId,
       name: slug(`${name}-${issue ? `issue-${issue.number}` : "slack"}-${m.threadTs.replace(".", "").slice(-8)}`),
       title: taskTitle(job),
-      spec: buildSpec({ job, context: m.context, reportPath: reportPath(job.id) }),
+      spec: buildSpec({ job, context: m.context, files, reportPath: reportPath(job.id), outbox: outboxDir(deps.filesRoot, job.id) }),
     }),
   );
 }
@@ -249,11 +274,12 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void>
     deps.store.save();
   }
   const title = `${taskTitle(next)} (follow-up)`;
-  const report = reportPath(next.id);
+  const files = (await bringFiles(deps, next, m.files)).filter((f) => f.fresh);
+  const paths = { files, reportPath: reportPath(next.id), outbox: outboxDir(deps.filesRoot, next.id) };
   await launch(deps, next, async () => {
     if (next.sessionId) {
       try {
-        const spec = buildSpec({ job: next, resumed: true, previousPrUrl: previous.prUrl, reportPath: report });
+        const spec = buildSpec({ job: next, resumed: true, previousPrUrl: previous.prUrl, ...paths });
         const started = await resumeSession(deps, { worktreeId, sessionId: next.sessionId, title, spec });
         console.log(`follow-up ${next.id}: resumed Claude session ${next.sessionId}`);
         return started;
@@ -265,7 +291,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void>
     return deps.orca.startFollowUp({
       worktreeId,
       title,
-      spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl, reportPath: report }),
+      spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl, ...paths }),
     });
   });
 }
@@ -305,7 +331,8 @@ async function answer(deps: BotDeps, m: Mention): Promise<void> {
   await deps.poster.react(m.channel, m.ts, "eyes");
   try {
     const repoPath = await deps.orca.repoPath(await deps.resolveRepo(m.target.owner, m.target.name));
-    const text = await deps.ask({ repoPath, question: m.text, thread: m.context });
+    const files = await bringFiles(deps, where, m.files);
+    const text = await deps.ask({ repoPath, question: m.text, thread: m.context, files });
     await deps.poster.postToThread(where, slackPost(text));
   } catch (err) {
     console.error(`ask in ${jobId(m.channel, m.threadTs)} failed:`, err);
@@ -391,6 +418,7 @@ function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWork
 async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
   try {
     await clearReport(job.id);
+    await mkdir(outboxDir(deps.filesRoot, job.id), { recursive: true });
     const w = await start();
     commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId });
   } catch (err) {
@@ -404,7 +432,7 @@ async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca[
 const answering = new Set<string>();
 
 /** Answers the pending question, typed or clicked, and retires its buttons. False when nothing is pending anymore. */
-async function answerWorker(deps: BotDeps, job: Job, text: string, user: string): Promise<boolean> {
+async function answerWorker(deps: BotDeps, job: Job, text: string, user: string, shown = text): Promise<boolean> {
   const state = job.state;
   if (state.kind !== "awaiting_answer" || answering.has(state.questionMsgId)) return false;
   answering.add(state.questionMsgId);
@@ -415,21 +443,37 @@ async function answerWorker(deps: BotDeps, job: Job, text: string, user: string)
     answering.delete(state.questionMsgId);
   }
   if (state.postTs) {
-    const done = answeredMessage({ requester: job.slack.requester, question: state.question, user, answer: text });
+    const done = answeredMessage({ requester: job.slack.requester, question: state.question, user, answer: shown });
     await deps.poster.update(job.slack.channel, state.postTs, done.text, done.blocks).catch((err) => console.error(`retiring question buttons in ${job.id} failed:`, err));
   }
   return true;
 }
 
-async function handleThreadInput(deps: BotDeps, job: Job, input: { ts: string; text: string; channel: string; user: string }): Promise<void> {
+/**
+ * Text and files from the thread reach the worker as guidance, or as the answer to its question.
+ * `onlyFresh` drops files an earlier message already brought, since a mention carries the whole thread's files.
+ */
+async function handleThreadInput(
+  deps: BotDeps,
+  job: Job,
+  input: { ts: string; text: string; channel: string; user: string; files?: readonly unknown[] },
+  { onlyFresh = false } = {},
+): Promise<void> {
   const state = job.state;
-  if (state.kind === "awaiting_answer") {
-    if (await answerWorker(deps, job, input.text, input.user)) await deps.poster.react(input.channel, input.ts, "white_check_mark");
-  } else if (state.kind === "working" && job.dispatchId) {
-    await deps.orca.send(job.dispatchId, input.text);
-    await deps.poster.react(input.channel, input.ts, "eyes");
-  } else if (state.kind === "starting") {
+  if (state.kind === "starting") {
     await deps.poster.postToThread(job, "Todavía estoy arrancando el worker. Mandalo de nuevo en un minuto.");
+    return;
+  }
+  if (state.kind !== "awaiting_answer" && !(state.kind === "working" && job.dispatchId)) return;
+  const files = (await bringFiles(deps, job, input.files)).filter((f) => f.fresh || !onlyFresh);
+  const message = withFiles(input.text, files);
+  if (!message) return;
+  const current = deps.store.data.jobs[job.id] ?? job;
+  if (current.state.kind === "awaiting_answer") {
+    if (await answerWorker(deps, current, message, input.user, shownText(input.text, files))) await deps.poster.react(input.channel, input.ts, "white_check_mark");
+  } else if (current.state.kind === "working" && current.dispatchId) {
+    await deps.orca.send(current.dispatchId, message);
+    await deps.poster.react(input.channel, input.ts, "eyes");
   }
 }
 
@@ -474,7 +518,7 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
       if (onStartMsg && known && isGuessedRepo(job) && !sameRepo(job, known) && !stopping.has(job.id)) {
         handled = true;
         stopping.add(job.id);
-        const m = { channel: input.channel, threadTs: input.threadTs, ts: input.threadTs, user: input.user, text: job.request, context: input.context };
+        const m = { channel: input.channel, threadTs: input.threadTs, ts: input.threadTs, user: input.user, text: job.request, context: input.context, files: input.files };
         await correctRepo(deps, job, m, { owner: known.owner, name: known.name, source: "name" }).finally(() => stopping.delete(job.id));
       }
       break;

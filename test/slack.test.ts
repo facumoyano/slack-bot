@@ -46,7 +46,7 @@ async function until(done: () => boolean): Promise<void> {
 test("Bolt acks every click, URL buttons included, and routes parsed ones to the click handler", async () => {
   const f = fakes();
   const app = offlineApp();
-  registerActions(app, f.deps, async () => undefined);
+  registerActions(app, f.deps, async () => []);
 
   const stopAcks = await dispatch(app, blockAction({ type: "button", action_id: ACTIONS.stop, value: "C1:100.1", text: { type: "plain_text", text: "Parar" } }));
   const prAcks = await dispatch(app, blockAction({ type: "button", action_id: ACTIONS.pr, url: "https://github.com/a/b/pull/1", text: { type: "plain_text", text: "Ver PR" } }));
@@ -61,7 +61,7 @@ test("Bolt acks every click, URL buttons included, and routes parsed ones to the
 test("a static_select click is read from its selected option", async () => {
   const f = fakes();
   const app = offlineApp();
-  registerActions(app, f.deps, async () => undefined);
+  registerActions(app, f.deps, async () => []);
 
   await dispatch(
     app,

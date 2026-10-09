@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { newJob, transition } from "../src/jobs.ts";
 import type { Job } from "../src/jobs.ts";
 import type { Block } from "../src/blocks.ts";
@@ -14,6 +17,11 @@ export function fakes(over: Partial<Orca> = {}) {
   const messages: { ts: string; text: string; blocks?: Block[] }[] = [];
   const updates: { ts: string; text: string; blocks?: Block[] }[] = [];
   const ephemerals: string[] = [];
+  const uploads: string[] = [];
+  const failUploads = new Set<string>();
+  /** Bytes served for each Slack file URL; a missing URL is a 404. */
+  const slackFiles: Record<string, Response | (() => Response)> = {};
+  const fetched: string[] = [];
   const poster: Poster = {
     async postToThread(_job, text, blocks) {
       posts.push(text);
@@ -34,10 +42,15 @@ export function fakes(over: Partial<Orca> = {}) {
       posts.push(`[top] ${text}`);
       return "200.1";
     },
+    async uploadFile(_job, path) {
+      if (failUploads.has(path)) throw new Error("upload_failed");
+      uploads.push(path);
+    },
   };
   const orca: Orca = {
     async startWorker(o) {
       calls.push(`start ${o.name}`);
+      specs.push(o.spec);
       return { taskId: "t1", dispatchId: "d1", worktreeId: "r1::/wt/api" };
     },
     async startFollowUp(o) {
@@ -105,12 +118,18 @@ export function fakes(over: Partial<Orca> = {}) {
     async latestSession(path) {
       return sessions[path];
     },
+    filesRoot: mkdtempSync(join(tmpdir(), "slack-bot-files-")),
+    async fetchFile(url) {
+      fetched.push(url);
+      const served = slackFiles[url];
+      return typeof served === "function" ? served() : (served ?? new Response("not found", { status: 404 }));
+    },
     async ask(o) {
-      calls.push(`ask ${o.repoPath} ${o.question}`);
+      calls.push(`ask ${o.repoPath} ${o.question}${o.files?.length ? ` files=${o.files.map((f) => f.path).join(",")}` : ""}`);
       return "## Respuesta\nSe valida en **src/webhook.ts:12**.";
     },
   };
-  return { posts, messages, updates, ephemerals, reactions, calls, specs, store, deps, sessions, clock };
+  return { posts, messages, updates, ephemerals, reactions, calls, specs, store, deps, sessions, clock, uploads, failUploads, slackFiles, fetched };
 }
 
 export function workingJob(): Job {

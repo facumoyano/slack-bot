@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -8,6 +9,7 @@ import type { BotDeps, Poster } from "../src/bot.ts";
 import { parseClick } from "../src/blocks.ts";
 import type { Block } from "../src/blocks.ts";
 import { runInbox } from "../src/inbox.ts";
+import { FILES_ROOT } from "../src/files.ts";
 import { jobId } from "../src/jobs.ts";
 import { ensureRun, findRepo, knownGithubRepos, realOrca, repoIdForPath } from "../src/orca.ts";
 import { chooseTarget } from "../src/parse.ts";
@@ -75,6 +77,9 @@ const poster: Poster = {
     console.log(`\n[${ts()}] [slack → canal, hilo nuevo]\n${text}\n`);
     return (Date.now() / 1000).toFixed(6);
   },
+  async uploadFile(_job, path) {
+    console.log(`[${ts()}] [archivo] ${basename(path)} (${(await stat(path)).size} bytes)`);
+  },
 };
 
 const command = parseCommand(request);
@@ -90,7 +95,11 @@ store.data.runId = await ensureRun(store.data.runId);
 store.save();
 console.log(`[${ts()}] run ${store.data.runId}`);
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion };
+async function fetchFile(url: string): Promise<Response> {
+  throw new Error(`the simulator cannot fetch ${url}`);
+}
+
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile };
 const channel = "SIM";
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
 const target =
