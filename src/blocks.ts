@@ -107,12 +107,12 @@ export function plainMessage(text: string): Message {
 }
 
 /** Slack keeps a message's text under 40k characters; the sections below split it, so only an outsized plan is cut. */
-const PLAN_MAX = 39_000;
+export const MESSAGE_MAX = 39_000;
 
 /** A plan as its own message, apart from the approval question whose message is rewritten once answered. */
 export function planMessage(mrkdwn: string): Message {
   const full = `📋 *Plan*\n\n${mrkdwn}`;
-  return plainMessage(full.length > PLAN_MAX ? `${full.slice(0, PLAN_MAX)}…` : full);
+  return plainMessage(full.length > MESSAGE_MAX ? `${full.slice(0, MESSAGE_MAX)}…` : full);
 }
 
 export function doneMessage(text: string, prUrl?: string): Message {
