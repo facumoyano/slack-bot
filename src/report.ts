@@ -21,6 +21,10 @@ export function readReport(jobId: string): Promise<string | undefined> {
   return readText(reportPath(jobId));
 }
 
+export function readPlan(jobId: string): Promise<string | undefined> {
+  return readText(planPath(jobId));
+}
+
 /** A new run starts with no report or plan, so a previous run's files are never posted as this one's. */
 export async function clearReports(jobId: string): Promise<void> {
   await Promise.all([rm(reportPath(jobId), { force: true }), rm(planPath(jobId), { force: true })]);

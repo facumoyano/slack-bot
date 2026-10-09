@@ -4,7 +4,7 @@ import { outboxDir, outboxFiles, retire } from "./files.ts";
 import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
 import { retireStart, startsSettled } from "./bot.ts";
-import { readReport, slackPost } from "./report.ts";
+import { readPlan, readReport, slackPost, toSlackMrkdwn } from "./report.ts";
 import type { Poster } from "./bot.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca } from "./orca.ts";
@@ -33,6 +33,14 @@ async function renderedReport(deps: InboxDeps, msg: InboxMessage): Promise<strin
   const report = job && (await readReport(job.id));
   if (!report) return undefined;
   return slackPost(report.replace(/^\s*\**PR:?\**:?\s*\S+\s*$/gim, "").trim());
+}
+
+async function renderedPlan(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
+  if (msg.type !== "question") return undefined;
+  const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
+  if (job?.mode !== "plan") return undefined;
+  const plan = await readPlan(job.id);
+  return plan && toSlackMrkdwn(plan);
 }
 
 async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
@@ -84,11 +92,13 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
       prUrlFallback: await prFallback(deps, msg),
       report: await renderedReport(deps, msg),
       sessionId: await sessionOf(deps, msg),
+      plan: await renderedPlan(deps, msg),
     };
     const before = findJobByDispatch(data, parsePayload(msg).dispatchId);
     const outcome = applyInboxMessage(data, msg, extras, now());
     // Before the text, so a question carries its screenshot and the final report its evidence.
     if (outcome) await flushOutbox(deps, outcome.job);
+    if (outcome?.lead) await deps.poster.postToThread(outcome.job, outcome.lead.text, outcome.lead.blocks);
     if (outcome?.post) {
       const ts = await deps.poster.postToThread(outcome.job, outcome.post, outcome.blocks);
       if (outcome.blocks && msg.type === "question") outcome.job = transition(outcome.job, { kind: "question_posted", msgId: msg.id, ts }) ?? outcome.job;

@@ -5,7 +5,7 @@ import type { CommandName } from "./commands.ts";
 import { mkdir } from "node:fs/promises";
 import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
 import type { LocalFile } from "./files.ts";
-import { isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
+import { PLAN_OPTIONS, isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent, Mode, RepoRef } from "./jobs.ts";
 import { worktreePath } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
@@ -543,6 +543,10 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
     case "answer": {
       const state = job?.state;
       const option = state?.kind === "awaiting_answer" && state.questionMsgId === click.questionMsgId && state.postTs === input.messageTs ? state.options[click.option] : undefined;
+      if (option === PLAN_OPTIONS.change && job!.mode === "plan") {
+        await deps.poster.ephemeral(where, input.user, "Escribí en el hilo qué querés cambiar.");
+        return;
+      }
       handled = option !== undefined && (await answerWorker(deps, job!, option, input.user));
       break;
     }
