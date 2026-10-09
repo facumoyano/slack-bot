@@ -138,7 +138,7 @@ stdin.on("line", (line) => {
     .catch((err) => console.error("thread reply failed:", err));
 });
 
-const inboxDeps = { orca: realOrca, poster, store, latestSession };
+const inboxDeps = { orca: realOrca, poster, store, latestSession, filesRoot: FILES_ROOT };
 const inbox = runInbox(inboxDeps, finished);
 const cancelAfter = Number(values["cancel-after"] ?? 0) * 1000;
 if (cancelAfter) {

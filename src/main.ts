@@ -26,4 +26,4 @@ console.log(`orca: bound to run ${store.data.runId}`);
 
 const slack = createSlack({ botToken, appToken });
 await slack.start({ orca: realOrca, store, resolveRepo: findRepo, knownRepos: knownGithubRepos, allowedUsers, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT });
-await runInbox({ orca: realOrca, poster: slack.poster, store, latestSession });
+await runInbox({ orca: realOrca, poster: slack.poster, store, latestSession, filesRoot: FILES_ROOT });
