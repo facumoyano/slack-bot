@@ -55,6 +55,20 @@ node scripts/simulate.ts --repo-path /ruta/a/repo --attach captura.png "Leé la 
 
 Imprime lo que el bot publicaría y lee las respuestas a las preguntas por stdin. Los botones salen como líneas `:click <acción> <valor>`; pegar una por stdin la toca como `USIM` (`:click-as <usuario> …` para tocar como otro). `!repo …` corre una vez y guarda el repo del canal `SIM` en el `--state`. `--cancel-after <s>` manda `!parar` a los `s` segundos de arrancar el worker. `--attach <archivo>` (repetible) adjunta un archivo local al pedido como si viniera de Slack; lo que el worker deja en su carpeta de salida sale como `[archivo] <nombre> (<bytes> bytes)` en vez de subirse.
 
+## Escribir en el hilo desde cualquier sesión
+
+`scripts/thread.ts` deja que una sesión de Claude abierta en el worktree de un job (por ejemplo desde Orca, después de que el worker terminó) escriba en el hilo de Slack de ese job como Alfred y lea lo que le contestan:
+
+```bash
+node --env-file=.env scripts/thread.ts post --to salva --text-file decisiones.md [--file captura.png] [--dry-run]
+node --env-file=.env scripts/thread.ts read [--since <ts>] [--from salva] [--all]
+node --env-file=.env scripts/thread.ts wait --from salva [--since <ts>] [--timeout 30]
+```
+
+Sin `--thread <canal>:<ts>`, el hilo es el del job de `data/state.json` cuyo worktree contiene el directorio actual. `post` convierte el Markdown a mrkdwn, menciona primero a los `--to` y parte en varios mensajes lo que no entra en uno. `wait` revisa el hilo cada 20 s y sale con código 2 si vence el timeout. El skill `skills/slack-thread` le explica a cualquier sesión cuándo y cómo usarlo; se instala con `ln -s /home/facu/orca/projects/slack-bot/skills/slack-thread ~/.claude/skills/slack-thread`.
+
+Lo que postea el CLI lo ignora el bot (descarta mensajes de bots), y una respuesta de alguien que no está en `ALLOWED_SLACK_USERS` no le llega a ningún worker.
+
 ## Cómo funciona
 
 Un solo proceso Node. Al arrancar retoma la Run guardada con `orca orchestration run-use` (o crea una nueva) y persiste todo en `data/state.json`. Cada mención crea un Job por hilo, busca el repo en Orca (lo clona si no está) y lanza `orca orchestration worker-start` con una spec que obliga a leer el issue, commitear, pushear, abrir el PR y cerrar con `worker_done` incluyendo `PR: <url>`. Un loop hace `orca orchestration check --wait`, rutea cada mensaje al Job por `dispatchId`, publica en Slack, marca el mensaje como procesado y recién después hace ack del lote, así un reinicio no pierde ni duplica avisos. Las transiciones están todas en `src/jobs.ts`.
