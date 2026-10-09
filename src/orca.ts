@@ -90,6 +90,48 @@ export async function startFollowUp(opts: { worktreeId: string; title: string; s
   return { ...workerStart(result), worktreeId: opts.worktreeId };
 }
 
+/** A visible terminal in an existing worktree running `command`; returns its handle. */
+export async function createTerminal(opts: { worktreeId: string; title: string; command: string }): Promise<string> {
+  const result = await orca(["terminal", "create", "--worktree", `id:${opts.worktreeId}`, "--title", opts.title, "--command", opts.command]);
+  const handle = result.terminal?.handle;
+  if (typeof handle !== "string") throw new OrcaError("bad_output", `terminal create returned no handle: ${JSON.stringify(result)}`);
+  return handle;
+}
+
+/** True once the terminal's TUI is idle; false when the wait times out or fails. */
+export async function waitTuiIdle(handle: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const result = await orca(["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", String(timeoutMs)]);
+    if (result.wait?.satisfied === true) return true;
+    console.error(`terminal wait ${handle} not satisfied: ${JSON.stringify(result)}`);
+    return false;
+  } catch (err) {
+    console.error(`terminal wait ${handle} failed:`, (err as Error).message);
+    return false;
+  }
+}
+
+export async function closeTerminal(handle: string): Promise<void> {
+  await orca(["terminal", "close", "--terminal", handle]);
+}
+
+/** Hands a task to an agent already running in `handle`; Orca rejects --agent and creation flags here. */
+export async function startWorkerInTerminal(opts: { worktreeId: string; handle: string; title: string; spec: string }): Promise<WorkerStart> {
+  const result = await orca([
+    "orchestration", "worker-start",
+    "--spec", opts.spec,
+    "--task-title", opts.title,
+    "--worktree", `id:${opts.worktreeId}`,
+    "--terminal", opts.handle,
+    "--timeout-ms", "600000",
+  ]);
+  return { ...workerStart(result), worktreeId: opts.worktreeId };
+}
+
+export async function stopWorker(dispatchId: string): Promise<void> {
+  await orca(["orchestration", "worker-stop", "--dispatch", dispatchId]);
+}
+
 export type Delivery = { deliveryId?: string; messages: InboxMessage[]; timedOut: boolean };
 
 export async function checkInbox(ackDeliveryId?: string): Promise<Delivery> {
@@ -172,6 +214,11 @@ export async function lookupPrUrl(worktreeId: string, owner: string, name: strin
 export type Orca = {
   startWorker: typeof startWorker;
   startFollowUp: typeof startFollowUp;
+  createTerminal: typeof createTerminal;
+  waitTuiIdle: typeof waitTuiIdle;
+  closeTerminal: typeof closeTerminal;
+  startWorkerInTerminal: typeof startWorkerInTerminal;
+  stopWorker: typeof stopWorker;
   checkInbox: typeof checkInbox;
   reply: typeof reply;
   send: typeof send;
@@ -179,4 +226,17 @@ export type Orca = {
   lookupPrUrl: typeof lookupPrUrl;
 };
 
-export const realOrca: Orca = { startWorker, startFollowUp, checkInbox, reply, send, release, lookupPrUrl };
+export const realOrca: Orca = {
+  startWorker,
+  startFollowUp,
+  createTerminal,
+  waitTuiIdle,
+  closeTerminal,
+  startWorkerInTerminal,
+  stopWorker,
+  checkInbox,
+  reply,
+  send,
+  release,
+  lookupPrUrl,
+};

@@ -54,6 +54,20 @@ test("follow-up carries the previous summary and PR", () => {
   assert.match(spec, /https:\/\/github\.com\/acme\/api\/pull\/3/);
 });
 
+test("a resumed follow-up tells the worker to continue its own session and keeps every rule", () => {
+  const spec = buildSpec({ reportPath: "/tmp/r.md",
+    job: { ...base, request: "¿cuál era la palabra?" },
+    resumed: true,
+    previousPrUrl: "https://github.com/acme/api/pull/3",
+  });
+  assert.match(spec, /continuing your own previous work on this request, in this same Claude session/);
+  assert.match(spec, /Update the existing PR instead of opening a new one \(https:\/\/github\.com\/acme\/api\/pull\/3\)/);
+  assert.match(spec, /pstack:poteto-mode/);
+  assert.match(spec, /\/tmp\/r\.md/);
+  assert.match(spec, /PR: <url>/);
+  assert.doesNotMatch(spec, /PREVIOUS SUMMARY/);
+});
+
 test("task title names the issue", () => {
   assert.equal(taskTitle({ ...base, issue: { number: 7, url: "u" }, request: "x" }), "acme/api#7");
 });

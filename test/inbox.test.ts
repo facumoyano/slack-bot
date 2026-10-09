@@ -30,6 +30,24 @@ function fakes() {
       calls.push(`followup ${o.worktreeId}`);
       return { taskId: "t2", dispatchId: "d2", worktreeId: o.worktreeId };
     },
+    async createTerminal(o) {
+      calls.push(`terminal ${o.worktreeId} ${o.command}`);
+      return "term-1";
+    },
+    async waitTuiIdle(handle) {
+      calls.push(`wait ${handle}`);
+      return true;
+    },
+    async closeTerminal(handle) {
+      calls.push(`close ${handle}`);
+    },
+    async startWorkerInTerminal(o) {
+      calls.push(`resume ${o.handle}`);
+      return { taskId: "t3", dispatchId: "d3", worktreeId: o.worktreeId };
+    },
+    async stopWorker(id) {
+      calls.push(`stop ${id}`);
+    },
     async checkInbox() {
       return { messages: [], timedOut: true };
     },
