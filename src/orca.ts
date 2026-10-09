@@ -136,8 +136,8 @@ export async function stopWorker(dispatchId: string): Promise<void> {
 
 export type Delivery = { deliveryId?: string; messages: InboxMessage[]; timedOut: boolean };
 
-export async function checkInbox(ackDeliveryId?: string): Promise<Delivery> {
-  const args = ["orchestration", "check", "--wait", "--types", "worker_done,escalation,question", "--timeout-ms", "60000"];
+export async function checkInbox(ackDeliveryId?: string, timeoutMs = 60_000): Promise<Delivery> {
+  const args = ["orchestration", "check", "--wait", "--types", "worker_done,escalation,question,status", "--timeout-ms", String(timeoutMs)];
   if (ackDeliveryId) args.push("--ack", ackDeliveryId);
   const result = await orca(args);
   return { deliveryId: result.deliveryId ?? undefined, messages: result.messages ?? [], timedOut: Boolean(result.timedOut) };

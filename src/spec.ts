@@ -76,6 +76,7 @@ export function buildSpec(input: SpecInput): string {
     "- Run the project's tests and lint if they exist, and fix what your change breaks.",
     "- If anything is ambiguous or blocking, ask the coordinator with the `ask` command from your preamble (`orca orchestration ask --question ...`) and wait for the answer. Pass a long `--timeout-ms` (for example 3600000) because a human answers from Slack; if it times out, resume the same question with `ask --resume <message_id>`. Never use a local interactive question prompt.",
     "- Never print or commit secrets.",
+    '- At each real milestone of the playbook (for example: reproduced the bug, found the root cause, fix implemented, tests passing, PR opened), send one progress message to the human: `orca orchestration send --type status --subject Avance --phase "<milestone>" --body "<one short Spanish sentence>"` plus the `--from`, `--task-id` and `--dispatch-id` arguments exactly as your preamble\'s other commands use them (copy them from the preamble; never invent ids). At most one per milestone; never for routine steps.',
     "",
     "## Ownership",
     "You own this worktree and its branch only. Do not touch other worktrees or repositories.",

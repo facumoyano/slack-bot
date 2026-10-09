@@ -21,6 +21,8 @@ export type Job = {
   dispatchId?: string;
   /** The last worker's Claude session, resumed by the next follow-up. */
   sessionId?: string;
+  /** Last ⏳ post time (ms) and the newest status held back because it came too soon after it. */
+  progress?: { postedAt: number; pending?: string };
   state: JobState;
 };
 
@@ -105,7 +107,7 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       return { ...job, sessionId: ev.sessionId ?? job.sessionId, state: { kind: "cancelled" } };
     case "follow_up":
       if (from !== "done" && from !== "cancelled") return undefined;
-      return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, state: { kind: "starting" } };
+      return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, progress: undefined, state: { kind: "starting" } };
     case "superseded":
       if (!isActive(job)) return undefined;
       return { ...job, state: { kind: "failed", error: ev.reason } };
@@ -154,7 +156,7 @@ export type DoneExtras = { prUrlFallback?: string; report?: string; sessionId?: 
  * Decides what one orchestration message means for its Job. Pure: the caller posts,
  * releases, then commits `job` and marks the message processed.
  */
-export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneExtras = {}): InboxOutcome | undefined {
+export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneExtras = {}, now = Date.now()): InboxOutcome | undefined {
   if (store.processedMsgIds.includes(msg.id)) return undefined;
   const payload = parsePayload(msg);
   const job = findJobByDispatch(store, payload.dispatchId);
@@ -168,6 +170,12 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
       if (!next) return undefined;
       const options = Array.isArray(payload.options) && payload.options.length ? `\nOpciones: ${payload.options.join(" / ")}` : "";
       return { job: next, post: `${who} pregunta: ${question}${options}\n_Respondé en este hilo._` };
+    }
+    case "status": {
+      if (!isActive(job)) return undefined;
+      const text = (msg.body ?? msg.subject ?? "").trim();
+      if (!text) return undefined;
+      return progressUpdate(job, text.length > MAX_STATUS ? `${text.slice(0, MAX_STATUS)}…` : text, now);
     }
     case "escalation":
       return { job, post: `⚠️ ${who} el worker escaló: ${msg.subject ?? ""}\n${msg.body ?? ""}`.trim() };
@@ -187,6 +195,33 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
     default:
       return undefined;
   }
+}
+
+const MAX_STATUS = 300;
+export const PROGRESS_INTERVAL_MS = 60_000;
+
+function progressUpdate(job: Job, text: string, now: number): InboxOutcome {
+  if (job.progress && now - job.progress.postedAt < PROGRESS_INTERVAL_MS) {
+    return { job: { ...job, progress: { ...job.progress, pending: text } } };
+  }
+  return { job: { ...job, progress: { postedAt: now } }, post: `⏳ ${text}` };
+}
+
+/** Held-back statuses of active jobs whose interval has passed, ready to post. */
+export function dueProgress(store: Store, now: number): InboxOutcome[] {
+  return Object.values(store.jobs).flatMap((job) => {
+    const pending = job.progress?.pending;
+    if (!pending || !isActive(job) || now - job.progress!.postedAt < PROGRESS_INTERVAL_MS) return [];
+    return [{ job: { ...job, progress: { postedAt: now } }, post: `⏳ ${pending}` }];
+  });
+}
+
+/** Milliseconds until the next held-back status may post, or undefined when none is waiting. */
+export function nextProgressIn(store: Store, now: number): number | undefined {
+  const waits = Object.values(store.jobs)
+    .filter((job) => job.progress?.pending && isActive(job))
+    .map((job) => Math.max(0, job.progress!.postedAt + PROGRESS_INTERVAL_MS - now));
+  return waits.length ? Math.min(...waits) : undefined;
 }
 
 export function markProcessed(store: Store, msgId: string): void {

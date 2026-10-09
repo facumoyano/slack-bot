@@ -77,7 +77,9 @@ function fakes(over: Partial<Orca> = {}) {
   };
   const store = memoryStore();
   const sessions: Record<string, string> = { "/wt/api": "sess-1" };
+  const clock = { now: 1_000_000 };
   const deps: BotDeps & InboxDeps = {
+    now: () => clock.now,
     orca: { ...orca, ...over },
     poster,
     store,
@@ -86,7 +88,7 @@ function fakes(over: Partial<Orca> = {}) {
       return sessions[path];
     },
   };
-  return { posts, reactions, calls, specs, store, deps, sessions };
+  return { posts, reactions, calls, specs, store, deps, sessions, clock };
 }
 
 function workingJob(): Job {
@@ -530,4 +532,65 @@ test("a mention after a cancel resumes the cancelled worker's session", async ()
   assert.deepEqual(f.calls.slice(1), ["terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
   assert.equal(job.state.kind, "working");
   assert.equal(job.request, "seguí, pero sin tocar el login");
+});
+
+function status(id: string, body: string, dispatchId = "d1"): InboxMessage {
+  return { id, type: "status", subject: "Avance", body, payload: JSON.stringify({ taskId: "t1", dispatchId, phase: "milestone" }) };
+}
+
+test("a status posts once as ⏳, even when the batch replays", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await processBatch(f.deps, [status("s1", "Reproduje el bug.")]);
+  await processBatch(f.deps, [status("s1", "Reproduje el bug.")]);
+
+  assert.deepEqual(f.posts, ["⏳ Reproduje el bug."]);
+});
+
+test("a long status is trimmed to 300 characters", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await processBatch(f.deps, [status("s1", "x".repeat(400))]);
+
+  assert.equal(f.posts[0], `⏳ ${"x".repeat(300)}…`);
+});
+
+test("statuses within 60s of the last post are held back; only the newest posts once the interval passes", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await processBatch(f.deps, [status("s1", "Reproduje el bug.")]);
+  f.clock.now += 10_000;
+  await processBatch(f.deps, [status("s2", "Encontré la causa.")]);
+  f.clock.now += 10_000;
+  await processBatch(f.deps, [status("s3", "Fix implementado.")]);
+  assert.deepEqual(f.posts, ["⏳ Reproduje el bug."]);
+
+  f.clock.now += 30_000;
+  await processBatch(f.deps, []);
+  assert.equal(f.posts.length, 1, "still inside the interval");
+
+  f.clock.now += 11_000;
+  await processBatch(f.deps, []);
+  await processBatch(f.deps, []);
+  assert.deepEqual(f.posts, ["⏳ Reproduje el bug.", "⏳ Fix implementado."]);
+});
+
+test("a status for a job that is no longer active is ignored, and so is its held-back one", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+  await processBatch(f.deps, [status("s1", "Reproduje el bug.")]);
+  f.clock.now += 5_000;
+  await processBatch(f.deps, [status("s2", "Encontré la causa.")]);
+
+  await processBatch(f.deps, [{ id: "m8", type: "worker_done", body: "Listo\nPR: https://github.com/acme/api/pull/1", payload: JSON.stringify({ dispatchId: "d1", outcome: "succeeded" }) }]);
+  f.clock.now += 120_000;
+  await processBatch(f.deps, [status("s3", "Tests pasando.")]);
+
+  assert.equal(f.posts.length, 2);
+  assert.equal(f.posts[0], "⏳ Reproduje el bug.");
+  assert.match(f.posts[1], /^✅/);
+  assert.ok(f.store.data.processedMsgIds.includes("s3"));
 });
