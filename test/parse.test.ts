@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { messageTexts, parseTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
+import { findTarget, messageTexts, newTaskRequest, parseTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
 
 test("issue URL wrapped as a Slack link", () => {
   assert.deepEqual(parseTarget(["mirá <https://github.com/acme/web-app/issues/42|acme/web-app#42 Login roto>"]), {
@@ -73,4 +73,25 @@ test("bare repo names resolve against known repos, treating - and _ alike", () =
 test("a link later in the thread is found when the mention has none", () => {
   const thread = ["es el repo de fyso-backend", "es el repo `fyso-dev/fyso_backend` y la issue es la #1717: <https://github.com/fyso-dev/fyso_backend/issues/1717>"];
   assert.deepEqual(parseTarget(thread)?.issue, { number: 1717, url: "https://github.com/fyso-dev/fyso_backend/issues/1717" });
+});
+
+test("nuevo, nueva and !new mark a separate task and are stripped from the request", () => {
+  assert.equal(newTaskRequest("nuevo arreglá el login en acme/api"), "arreglá el login en acme/api");
+  assert.equal(newTaskRequest("  Nueva: sumá tests"), "sumá tests");
+  assert.equal(newTaskRequest("!NEW fix the build"), "fix the build");
+  assert.equal(newTaskRequest("nuevo"), "");
+});
+
+test("words that only start with the keyword, or mention it later, are not a separate task", () => {
+  assert.equal(newTaskRequest("nuevos tests para el login"), undefined);
+  assert.equal(newTaskRequest("novedades: nuevo endpoint"), undefined);
+  assert.equal(newTaskRequest("!newer"), undefined);
+  assert.equal(newTaskRequest("agregá un test nuevo"), undefined);
+});
+
+test("findTarget says whether a link or a known repo name found the target", () => {
+  const repos = [{ owner: "acme", name: "billing" }];
+  assert.equal(findTarget(["mirá acme/api#3"], repos)?.source, "link");
+  assert.deepEqual(findTarget(["tocá billing"], repos), { owner: "acme", name: "billing", source: "name" });
+  assert.equal(findTarget(["tocá el backend"], repos), undefined);
 });

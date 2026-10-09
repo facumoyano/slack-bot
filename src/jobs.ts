@@ -42,6 +42,23 @@ export function newJob(fields: Omit<Job, "id" | "state">): Job {
   return { ...fields, id: jobId(fields.slack.channel, fields.slack.threadTs), state: { kind: "starting" } };
 }
 
+export function jobLabel(job: Pick<Job, "repo" | "issue">): string {
+  return targetLabel({ ...job.repo, issue: job.issue });
+}
+
+export function targetLabel(t: { owner: string; name: string; issue?: { number: number } }): string {
+  return t.issue ? `${t.owner}/${t.name}#${t.issue.number}` : `${t.owner}/${t.name}`;
+}
+
+export function sameRepo(job: Pick<Job, "repo">, t: { owner: string; name: string }): boolean {
+  return job.repo.owner.toLowerCase() === t.owner.toLowerCase() && job.repo.name.toLowerCase() === t.name.toLowerCase();
+}
+
+/** A target that is not this job's work: another repo, or an issue other than the job's. */
+export function isOtherTask(job: Pick<Job, "repo" | "issue">, t: { owner: string; name: string; issue?: { number: number } }): boolean {
+  return !sameRepo(job, t) || (t.issue !== undefined && t.issue.number !== job.issue?.number);
+}
+
 export function isActive(job: Job): boolean {
   const k = job.state.kind;
   return k === "starting" || k === "working" || k === "awaiting_answer";

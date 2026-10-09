@@ -1,8 +1,12 @@
+import type { RepoSource } from "./jobs.ts";
+
 export type GithubTarget = {
   owner: string;
   name: string;
   issue?: { number: number; url: string };
 };
+
+export type FoundTarget = GithubTarget & { source: RepoSource };
 
 const SEG = String.raw`[A-Za-z0-9_.-]+`;
 const ITEM_URL = new RegExp(String.raw`github\.com/(${SEG})/(${SEG})/(issues|pull)/(\d+)`);
@@ -58,6 +62,23 @@ export function matchKnownRepo(texts: readonly string[], repos: readonly KnownRe
     if (repo) return { owner: repo.owner, name: repo.name };
   }
   return undefined;
+}
+
+/** A link or `owner/repo#n` first, then an exact known repo name. Claude's guess is the caller's last resort. */
+export function findTarget(texts: readonly string[], repos: readonly KnownRepo[]): FoundTarget | undefined {
+  const linked = parseTarget(texts);
+  if (linked) return { ...linked, source: "link" };
+  const named = matchKnownRepo(texts, repos);
+  if (named) return { ...named, source: "name" };
+  return undefined;
+}
+
+const NEW_TASK = /^\s*(?:nuevo|nueva|!new)(?![\p{L}\p{N}_])[\s:,.-]*/iu;
+
+/** The request without its leading `nuevo`/`nueva`/`!new`, or undefined when the mention is not a separate task. */
+export function newTaskRequest(text: string): string | undefined {
+  const match = NEW_TASK.exec(text);
+  return match ? text.slice(match[0].length).trim() : undefined;
 }
 
 type SlackMessageLike = {
