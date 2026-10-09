@@ -220,7 +220,7 @@ function startJob(deps: BotDeps, m: Mention, mode: Mode, intro?: string): Promis
   return p;
 }
 
-const SAME_SESSION = "en la misma sesión, me acuerdo de lo que hice en este hilo";
+const SAME_SESSION = "en la misma sesión";
 
 const START_TEXT: Record<Mode, { first(label: string, issue: boolean, guessed: string): string; followUp: string }> = {
   change: {

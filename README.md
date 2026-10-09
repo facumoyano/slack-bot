@@ -14,7 +14,7 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 6. Invitá al bot a los canales (`/invite @alfred`).
 
    Si la app ya estaba instalada de antes, los archivos necesitan los scopes `files:read` (bajar lo que le mandás) y `files:write` (subir lo que genera el worker): agregalos desde el manifest o en OAuth & Permissions y reinstalala (**Install App → Reinstall to Workspace**). Sin `files:read`, Slack devuelve una página de login en vez del archivo y el bot avisa en el hilo que falta el scope.
-7. `scripts/start-in-orca.sh`. Abre una terminal de Orca llamada `slack-bot` que corre `node --env-file=.env src/main.ts`. Tiene que correr dentro de Orca porque la Run de orquestación se ata a la terminal que la crea. Si ya hay un bot corriendo desde este directorio, muestra su pid y no arranca otro.
+7. `scripts/start-in-orca.sh`. Abre una terminal de Orca llamada `slack-bot` que corre `node --env-file=.env src/main.ts`. Tiene que correr dentro de Orca porque la Run de orquestación se ata a la terminal que la crea. Si ya hay un bot corriendo desde este directorio, muestra su pid y no arranca otro. Para reiniciarlo con código nuevo: `scripts/start-in-orca.sh --restart` (frena el bot, cierra su terminal y abre una nueva).
 
 ## Uso
 
