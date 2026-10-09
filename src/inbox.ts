@@ -32,7 +32,7 @@ async function renderedReport(deps: InboxDeps, msg: InboxMessage): Promise<strin
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
   const report = job && (await readReport(job.id));
   if (!report) return undefined;
-  return slackPost(report.replace(/^\s*\**PR:?\**:?\s*\S+\s*$/gim, "").trim());
+  return slackPost(report.replace(/^\s*\**PR\b:?\**:?\s*\S+\s*$/gim, "").trim());
 }
 
 async function renderedPlan(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {

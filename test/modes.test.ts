@@ -7,7 +7,7 @@ import { handleClick, handleMention, handleThreadReply } from "../src/bot.ts";
 import type { Mention } from "../src/bot.ts";
 import { processBatch } from "../src/inbox.ts";
 import type { InboxMessage, Job } from "../src/jobs.ts";
-import { planPath } from "../src/report.ts";
+import { planPath, reportPath } from "../src/report.ts";
 import { fakes, workingJob } from "./fakes.ts";
 
 const target = { owner: "acme", name: "api", source: "link" as const };
@@ -199,4 +199,19 @@ test("a change-mode question posts no plan, and Cambiar there is an ordinary ans
 
   assert.equal(p.f.messages.length, 1);
   assert.deepEqual(p.f.calls, ["reply q1 Cambiar"]);
+});
+
+test("the report keeps labels that start with Pr while its PR line is dropped", async (t) => {
+  const f = fakes();
+  const base = workingJob();
+  const job: Job = { ...base, id: "CREP:400.1", slack: { ...base.slack, channel: "CREP", threadTs: "400.1" }, mode: "investigate" };
+  f.store.data.jobs[job.id] = job;
+  const path = reportPath(job.id);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, "**Pregunta**\n\n¿Qué hay?\n\n**Pruebas**\n\nNinguna.\n\n**PR:** https://github.com/acme/api/pull/7\nPR: https://github.com/acme/api/pull/7\n");
+  t.after(() => rm(path, { force: true }));
+
+  await processBatch(f.deps, [done("m1", "Listo.")]);
+
+  assert.equal(f.posts[0], "🔎 <@U1> listo.\n\n*Pregunta*\n\n¿Qué hay?\n\n*Pruebas*\n\nNinguna.");
 });
