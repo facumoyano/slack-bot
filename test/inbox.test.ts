@@ -328,18 +328,18 @@ test("a mention naming another issue or another repo is not mixed into the threa
     assert.deepEqual(f.calls, []);
     assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "done");
     const other = `${ownTarget.owner}/${ownTarget.name}#${ownTarget.issue.number}`;
-    assert.equal(f.posts.at(-1), `Este hilo es de acme/api#5. Si querés que tome ${other} como tarea aparte, escribí <@UBOT> \`nuevo …\`.`);
+    assert.equal(f.posts.at(-1), `Este hilo es de acme/api#5. Si querés que tome ${other} como tarea aparte, escribí <@UBOT> \`!nuevo …\`.`);
   }
 });
 
-test("nuevo inside a thread opens a new thread and keys the new job by its ts", async () => {
+test("!nuevo inside a thread opens a new thread and keys the new job by its ts", async () => {
   const f = fakes();
   f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
 
   await handleMention(f.deps, {
     ...followUpMention,
     text: "sumá tests a acme/web",
-    newTask: true,
+    command: "nuevo",
     target: { owner: "acme", name: "web", source: "link" },
     context: "hilo original",
   });
@@ -408,5 +408,35 @@ test("naming another repo in a thread whose repo came from a link is a conflict,
   await handleMention(f.deps, { ...followUpMention, ownTarget: { owner: "acme", name: "billing", source: "name" } });
 
   assert.deepEqual(f.calls, []);
-  assert.match(f.posts.at(-1)!, /^Este hilo es de acme\/api#5\. .*mencioname con `nuevo …`\.$/);
+  assert.match(f.posts.at(-1)!, /^Este hilo es de acme\/api#5\. .*mencioname con `!nuevo …`\.$/);
+});
+
+test("an !aparte thread reply while awaiting an answer is ignored entirely", async () => {
+  const f = fakes();
+  const job = workingJob();
+  f.store.data.jobs[job.id] = job;
+  await processBatch(f.deps, [question]);
+  const postsBefore = f.posts.length;
+
+  const handled = await handleThreadReply(f.deps, { channel: "C1", threadTs: "100.1", ts: "100.5", text: "!aparte che, ¿le decimos Hola?" });
+
+  assert.equal(handled, true);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.reactions, []);
+  assert.equal(f.posts.length, postsBefore);
+  assert.equal(f.store.data.jobs[job.id].state.kind, "awaiting_answer");
+});
+
+test("an !aparte mention does nothing, and !ayuda posts the command list", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await handleMention(f.deps, { ...followUpMention, text: "esto no es para vos", command: "aparte" });
+  assert.deepEqual(f.posts, []);
+  assert.deepEqual(f.calls, []);
+
+  await handleMention(f.deps, { ...followUpMention, text: "", command: "ayuda" });
+  assert.equal(f.posts.length, 1);
+  assert.match(f.posts[0], /`!pregunta/);
+  assert.deepEqual(f.calls, []);
 });

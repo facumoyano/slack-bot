@@ -1,7 +1,8 @@
 import bolt from "@slack/bolt";
 import { handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
-import { findTarget, messageTexts, newTaskRequest, stripMention } from "./parse.ts";
+import { parseCommand } from "./commands.ts";
+import { findTarget, messageTexts, stripMention } from "./parse.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { resolveWithClaude } from "./resolve.ts";
 
@@ -35,6 +36,9 @@ export function createSlack(config: SlackConfig) {
 
     app.event("app_mention", async ({ event }) => {
       if (!event.user || event.bot_id) return;
+      const text = stripMention(event.text, botUserId);
+      const command = parseCommand(text);
+      if (command?.name === "aparte") return;
       const threadTs = event.thread_ts ?? event.ts;
       const where = { slack: { channel: event.channel, threadTs, requester: event.user } };
       if (!config.allowedUsers.has(event.user)) {
@@ -44,8 +48,10 @@ export function createSlack(config: SlackConfig) {
         );
         return;
       }
-      const text = stripMention(event.text, botUserId);
+      const request = command ? command.rest : text;
+      const mention = { channel: event.channel, threadTs, ts: event.ts, user: event.user, text: request, command: command?.name };
       const work = async () => {
+        if (command?.name === "parar" || command?.name === "ayuda") return handleMention(full, mention);
         // Newest first: a link posted later in the thread (often by another bot) beats the root.
         const thread: string[][] = [];
         if (event.thread_ts) {
@@ -54,8 +60,7 @@ export function createSlack(config: SlackConfig) {
             thread.push(messageTexts(m as Parameters<typeof messageTexts>[0]).map((t) => stripMention(t, botUserId)));
           }
         }
-        const request = newTaskRequest(text);
-        const ownTexts = messageTexts({ ...event, text: request ?? text });
+        const ownTexts = messageTexts({ ...event, text: request });
         const all = [...ownTexts, ...thread.flat()];
         const repos = await deps.knownRepos().catch((err) => {
           console.error("listing known repos failed:", err);
@@ -64,7 +69,7 @@ export function createSlack(config: SlackConfig) {
         const ownTarget = findTarget(ownTexts, repos);
         // A separate task looks at the thread only through Claude, so an old link up-thread cannot claim it.
         const target: FoundTarget | undefined =
-          (request !== undefined ? ownTarget : findTarget(all, repos)) ??
+          (command?.name === "nuevo" ? ownTarget : findTarget(all, repos)) ??
           (await resolveWithClaude(all, repos).then(
             (t) => t && { ...t, source: "inferred" as const },
             (err) => {
@@ -73,17 +78,7 @@ export function createSlack(config: SlackConfig) {
             },
           ));
         const context = [...thread].reverse().map((t) => t[0] ?? "").filter(Boolean).join("\n---\n").slice(-CONTEXT_LIMIT);
-        await handleMention(full, {
-          channel: event.channel,
-          threadTs,
-          ts: event.ts,
-          user: event.user!,
-          text: request ?? text,
-          context: context || undefined,
-          target,
-          ownTarget,
-          newTask: request !== undefined,
-        });
+        await handleMention(full, { ...mention, context: context || undefined, target, ownTarget });
       };
       work().catch(async (err) => {
         console.error("app_mention failed:", err);

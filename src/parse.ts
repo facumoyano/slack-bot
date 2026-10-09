@@ -73,14 +73,6 @@ export function findTarget(texts: readonly string[], repos: readonly KnownRepo[]
   return undefined;
 }
 
-const NEW_TASK = /^\s*(?:nuevo|nueva|!new)(?![\p{L}\p{N}_])[\s:,.-]*/iu;
-
-/** The request without its leading `nuevo`/`nueva`/`!new`, or undefined when the mention is not a separate task. */
-export function newTaskRequest(text: string): string | undefined {
-  const match = NEW_TASK.exec(text);
-  return match ? text.slice(match[0].length).trim() : undefined;
-}
-
 type SlackMessageLike = {
   text?: string;
   attachments?: ReadonlyArray<Record<string, unknown>>;

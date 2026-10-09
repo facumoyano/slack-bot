@@ -1,3 +1,5 @@
+import { helpText, parseCommand } from "./commands.ts";
+import type { CommandName } from "./commands.ts";
 import { isActive, isOtherTask, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent } from "./jobs.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
@@ -33,8 +35,8 @@ export type Mention = {
   target?: FoundTarget;
   /** A target named deterministically by the mention's own text, never by the thread or Claude. */
   ownTarget?: FoundTarget;
-  /** The mention started with `nuevo`/`!new`: a separate task, `text` already stripped of the keyword. */
-  newTask?: boolean;
+  /** The mention started with this command; `text` is what follows it. */
+  command?: CommandName;
 };
 
 export type ThreadReply = { channel: string; threadTs: string; ts: string; text: string };
@@ -65,10 +67,17 @@ function errorText(err: unknown): string {
 }
 
 export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
-  if (m.newTask && m.threadTs !== m.ts) return startInNewThread(deps, m);
+  switch (m.command) {
+    case "aparte":
+      return;
+    case "ayuda":
+      return deps.poster.postToThread(threadOf(m), helpText());
+    case "nuevo":
+      if (m.threadTs !== m.ts) return startInNewThread(deps, m);
+  }
   const id = jobId(m.channel, m.threadTs);
   const existing = deps.store.data.jobs[id];
-  if (existing && !m.newTask && m.ownTarget && isOtherTask(existing, m.ownTarget)) {
+  if (existing && m.command !== "nuevo" && m.ownTarget && isOtherTask(existing, m.ownTarget)) {
     if (isActive(existing) && existing.repoSource === "inferred" && !sameRepo(existing, m.ownTarget)) {
       return correctRepo(deps, existing, m, m.ownTarget);
     }
@@ -80,6 +89,10 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
   return startJob(deps, m);
 }
 
+function threadOf(m: Pick<Mention, "channel" | "threadTs" | "user">): Pick<Job, "slack"> {
+  return { slack: { channel: m.channel, threadTs: m.threadTs, requester: m.user } };
+}
+
 function quote(text: string): string {
   return text.split("\n").map((line) => `> ${line}`).join("\n");
 }
@@ -87,12 +100,12 @@ function quote(text: string): string {
 async function startInNewThread(deps: BotDeps, m: Mention): Promise<void> {
   const asked = `🆕 <@${m.user}> pidió una tarea aparte desde otro hilo${m.text ? `:\n${quote(m.text)}` : "."}`;
   const threadTs = await deps.poster.postTopLevel(m.channel, asked);
-  await deps.poster.postToThread({ slack: { channel: m.channel, threadTs: m.threadTs, requester: m.user } }, "🆕 la sigo en un hilo aparte.");
+  await deps.poster.postToThread(threadOf(m), "🆕 la sigo en un hilo aparte.");
   return startJob(deps, { ...m, threadTs });
 }
 
 async function replyOtherTask(deps: BotDeps, job: Job, target: FoundTarget): Promise<void> {
-  const how = deps.botUserId ? `escribí <@${deps.botUserId}> \`nuevo …\`` : "mencioname con `nuevo …`";
+  const how = deps.botUserId ? `escribí <@${deps.botUserId}> \`!nuevo …\`` : "mencioname con `!nuevo …`";
   await deps.poster.postToThread(job, `Este hilo es de ${jobLabel(job)}. Si querés que tome ${targetLabel(target)} como tarea aparte, ${how}.`);
 }
 
@@ -113,7 +126,7 @@ async function correctRepo(deps: BotDeps, job: Job, m: Mention, target: FoundTar
 
 async function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
-  const where = { slack: { channel: m.channel, threadTs: m.threadTs, requester: m.user } };
+  const where = threadOf(m);
   if (!m.target) {
     await deps.poster.postToThread(
       where,
@@ -235,8 +248,9 @@ async function handleThreadInput(deps: BotDeps, job: Job, input: { ts: string; t
   }
 }
 
-/** Plain thread replies (no mention). Returns false when the thread has no active job. */
+/** Plain thread replies (no mention). Returns false when the thread has no active job; an `!aparte` reply counts as handled. */
 export async function handleThreadReply(deps: BotDeps, r: ThreadReply): Promise<boolean> {
+  if (parseCommand(r.text)?.name === "aparte") return true;
   const job = deps.store.data.jobs[jobId(r.channel, r.threadTs)];
   if (!job || !isActive(job)) return false;
   await handleThreadInput(deps, job, r);
