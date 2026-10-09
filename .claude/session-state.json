@@ -1,6 +1,6 @@
 {
   "branch": "main",
-  "lastCommit": "f00e501 Ask Claude for the repo when the thread names it loosely",
-  "savedAt": "2026-10-08T22:46:23Z",
+  "lastCommit": "18a3102 Skip the bot's own messages when reading the thread",
+  "savedAt": "2026-10-08T22:48:55Z",
   "projectDir": "/home/facu/orca/projects/slack-bot"
 }

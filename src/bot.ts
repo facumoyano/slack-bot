@@ -2,6 +2,7 @@ import { isActive, jobId, newJob, transition } from "./jobs.ts";
 import type { Job, JobEvent } from "./jobs.ts";
 import type { Orca } from "./orca.ts";
 import type { GithubTarget } from "./parse.ts";
+import { clearReport, reportPath } from "./report.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
 
@@ -92,7 +93,7 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
         repoId: orcaRepoId,
         name: slug(`${name}-${issue ? `issue-${issue.number}` : "slack"}-${m.threadTs.replace(".", "").slice(-8)}`),
         title: taskTitle(job),
-        spec: buildSpec({ job, context: m.context }),
+        spec: buildSpec({ job, context: m.context, reportPath: reportPath(job.id) }),
       }),
     );
   } finally {
@@ -112,7 +113,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void>
     deps.orca.startFollowUp({
       worktreeId,
       title: `${taskTitle(next)} (follow-up)`,
-      spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl }),
+      spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl, reportPath: reportPath(next.id) }),
     }),
   );
 }
@@ -125,6 +126,7 @@ function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWork
 
 async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
   try {
+    await clearReport(job.id);
     const w = await start();
     commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId });
   } catch (err) {

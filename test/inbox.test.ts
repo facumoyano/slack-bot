@@ -120,7 +120,7 @@ test("worker_done extracts the PR URL, reports it, and releases the worker", asy
   });
   assert.equal(f.posts.length, 1);
   assert.match(f.posts[0], /^✅/);
-  assert.match(f.posts[0], /PR: https:\/\/github\.com\/acme\/api\/pull\/12/);
+  assert.match(f.posts[0], /\*PR:\* https:\/\/github\.com\/acme\/api\/pull\/12/);
   assert.deepEqual(f.calls, ["release d1"]);
 });
 

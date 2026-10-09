@@ -7,6 +7,8 @@ export type SpecInput = {
   /** Summary of the previous worker on this worktree, for follow-ups. */
   previousSummary?: string;
   previousPrUrl?: string;
+  /** Absolute path where the worker writes the human report the bot posts to Slack. */
+  reportPath: string;
 };
 
 const FENCE = "=====";
@@ -46,6 +48,8 @@ export function buildSpec(input: SpecInput): string {
   return [
     "## Method",
     "Before any other step, invoke the Skill tool with `pstack:poteto-mode` and follow the playbook that matches this task (Bug fix, Feature, Refactoring, Perf issue, and so on), ending with its Opening a PR playbook. Treat this task as a full-autonomy grant: decide the calls the playbook lets you decide and report them in the summary.",
+    "These poteto-mode steps are mandatory here and may not be skipped, even for a small diff: run `/deslop` before every commit, `/no-comments` before opening the PR, and `/technical-writing` for the PR title, description and commit messages.",
+    "Opening the PR with `gh pr create` is the deliverable the human asked for; it is not the out-of-band posting your preamble forbids.",
     "Wherever the playbook or a skill would ask the human (AskUserQuestion or a reply that waits for the user), use the coordinator `ask` command described under Constraints instead. The human only sees Slack.",
     "",
     "## Target",
@@ -70,7 +74,8 @@ export function buildSpec(input: SpecInput): string {
     "## Observable acceptance",
     "- The change is committed on the worktree branch.",
     `- The branch is pushed with \`git push -u origin HEAD\` and a PR is open via \`gh pr create --repo ${slug}\`.${closes}`,
-    "- Your final `worker_done` body is a short summary (Spanish is fine) and MUST include the PR URL on its own line as `PR: <url>`.",
+    `- Before \`worker_done\`, write the report for the human, in Spanish Markdown, to \`${input.reportPath}\` (outside the repo; never commit it). Use these bold section labels, each its own paragraph, bullets where there are several items: **Qué pasaba**, **Qué cambié**, **Cómo lo verifiqué**, **Pendiente**, **Decisiones**. Short sentences. The bot posts this file to Slack.`,
+    "- Your final `worker_done` body is a short summary and MUST include the PR URL on its own line as `PR: <url>`.",
     "- Use `--outcome failed` if no PR was opened, and explain why in the body.",
   ].join("\n");
 }

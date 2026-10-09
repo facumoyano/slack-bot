@@ -110,7 +110,7 @@ export type InboxOutcome = { job: Job; post?: string; release?: string };
  * Decides what one orchestration message means for its Job. Pure: the caller posts,
  * releases, then commits `job` and marks the message processed.
  */
-export function applyInboxMessage(store: Store, msg: InboxMessage, prUrlFallback?: string): InboxOutcome | undefined {
+export function applyInboxMessage(store: Store, msg: InboxMessage, prUrlFallback?: string, report?: string): InboxOutcome | undefined {
   if (store.processedMsgIds.includes(msg.id)) return undefined;
   const payload = parsePayload(msg);
   const job = findJobByDispatch(store, payload.dispatchId);
@@ -129,13 +129,13 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, prUrlFallback
       return { job, post: `⚠️ ${who} el worker escaló: ${msg.subject ?? ""}\n${msg.body ?? ""}`.trim() };
     case "worker_done": {
       const outcome = payload.outcome === "succeeded" ? "succeeded" : "failed";
-      const summary = summaryOf(msg);
-      const prUrl = extractPrUrl(msg.body ?? "") ?? prUrlFallback;
+      const summary = report ?? summaryOf(msg);
+      const prUrl = extractPrUrl(msg.body ?? "") ?? extractPrUrl(report ?? "") ?? prUrlFallback;
       const next = transition(job, { kind: "worker_done", outcome, summary, prUrl });
       if (!next) return undefined;
       const head = outcome === "succeeded" ? `✅ ${who} terminé.` : `❌ ${who} no pude completarlo.`;
-      const pr = prUrl ? `PR: ${prUrl}` : "No se abrió PR.";
-      return { job: next, post: `${head}\n${summary}\n${pr}`, release: payload.dispatchId };
+      const pr = prUrl ? `*PR:* ${prUrl}` : "No se abrió PR.";
+      return { job: next, post: `${head}\n\n${summary}\n\n${pr}`, release: payload.dispatchId };
     }
     default:
       return undefined;
