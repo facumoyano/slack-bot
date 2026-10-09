@@ -34,13 +34,13 @@ function label(text: string): string {
   return flat.length > LABEL_MAX ? `${flat.slice(0, LABEL_MAX - 1)}…` : flat;
 }
 
-/** Text as section blocks, split on line breaks to fit Slack's per-section limit. */
-export function textBlocks(text: string): Block[] {
-  const pieces = text.split("\n").flatMap((line) => line.match(new RegExp(`[^]{1,${SECTION_MAX}}`, "g")) ?? [""]);
+/** Text in chunks of at most `max` characters, split on line breaks; only a longer line is split mid-line. */
+export function splitText(text: string, max: number): string[] {
+  const pieces = text.split("\n").flatMap((line) => line.match(new RegExp(`[^]{1,${max}}`, "g")) ?? [""]);
   const chunks: string[] = [];
   let current: string | undefined;
   for (const piece of pieces) {
-    if (current !== undefined && current.length + 1 + piece.length > SECTION_MAX) {
+    if (current !== undefined && current.length + 1 + piece.length > max) {
       chunks.push(current);
       current = piece;
     } else {
@@ -48,7 +48,14 @@ export function textBlocks(text: string): Block[] {
     }
   }
   if (current !== undefined) chunks.push(current);
-  return chunks.filter((chunk) => chunk.trim()).map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } }));
+  return chunks;
+}
+
+/** Text as section blocks, split on line breaks to fit Slack's per-section limit. */
+export function textBlocks(text: string): Block[] {
+  return splitText(text, SECTION_MAX)
+    .filter((chunk) => chunk.trim())
+    .map((chunk) => ({ type: "section", text: { type: "mrkdwn", text: chunk } }));
 }
 
 export function questionMessage(o: { jobId: string; questionMsgId: string; requester: string; question: string; options: readonly string[] }): Message {
