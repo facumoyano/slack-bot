@@ -124,7 +124,7 @@ async function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void
 
   const { owner, name, issue, source } = m.target;
   const label = targetLabel(m.target);
-  const guessed = source === "inferred" ? " (lo deduje del hilo; si no es ese, decime cuál)" : "";
+  const guessed = source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : "";
   starting.add(id);
   try {
     await deps.poster.react(m.channel, m.ts, "saluting_face");
