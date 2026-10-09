@@ -12,6 +12,8 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 4. `npm install`.
 5. `gh auth setup-git` para que los workers puedan hacer `git push` con la sesión de `gh`.
 6. Invitá al bot a los canales (`/invite @alfred`).
+
+   Si la app ya estaba instalada de antes, los archivos necesitan los scopes `files:read` (bajar lo que le mandás) y `files:write` (subir lo que genera el worker): agregalos desde el manifest o en OAuth & Permissions y reinstalala (**Install App → Reinstall to Workspace**). Sin `files:read`, Slack devuelve una página de login en vez del archivo y el bot avisa en el hilo que falta el scope.
 7. `scripts/start-in-orca.sh`. Abre una terminal de Orca llamada `slack-bot` que corre `node --env-file=.env src/main.ts`. Tiene que correr dentro de Orca porque la Run de orquestación se ata a la terminal que la crea. Si ya hay un bot corriendo desde este directorio, muestra su pid y no arranca otro.
 
 ## Uso
@@ -24,6 +26,8 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 - Mientras trabaja, cualquier mensaje tuyo en el hilo le llega como indicación extra. Avisa en el hilo con ⏳ cada hito (bug reproducido, causa encontrada, tests pasando, PR abierto), como mucho uno por minuto.
 - Cuando terminó, mencionalo de nuevo en el mismo hilo para pedir cambios. Retoma la misma sesión de Claude sobre el mismo worktree y la misma rama.
 - Para otra tarea desde un hilo que ya tiene una, usá `!nuevo`: el bot la sigue en un hilo nuevo del canal.
+- Archivos de ida: adjuntá imágenes, PDFs, logs o lo que sea a la mención, a mensajes anteriores del hilo o a una respuesta en el hilo mientras trabaja (sirve un archivo sin texto, también como respuesta a una pregunta). El bot los baja a `data/files/<hilo>/in/` y le pasa al worker la ruta de cada uno; `!pregunta` también los lee. No baja archivos de más de 50 MB ni los externos (Google Drive y similares), y avisa en el hilo cuáles no pudo bajar.
+- Archivos de vuelta: el worker deja en `data/files/<hilo>/out/` lo que conviene que veas (capturas o un video corto de un cambio de UI, un PDF o deck, un log, un CSV). El bot los sube al hilo junto con la próxima pregunta, avance o reporte final, y los mueve a `out/sent/` para no subirlos dos veces. Si una subida falla, avisa con ⚠️ y sigue.
 
 Comandos. Van como primera palabra después de la mención, sin importar mayúsculas ni tildes. Una palabra sin `!` es texto común.
 
@@ -41,9 +45,10 @@ node scripts/simulate.ts "arreglá https://github.com/org/repo/issues/12"
 node scripts/simulate.ts --repo-path /ruta/a/repo/registrado/en/orca "Agregá un HELLO.md"
 node scripts/simulate.ts --repo-path /ruta/a/repo --cancel-after 90 "Agregá un HELLO.md"
 node scripts/simulate.ts --repo-path /ruta/a/repo "!pregunta ¿dónde se valida el token?"
+node scripts/simulate.ts --repo-path /ruta/a/repo --attach captura.png "Leé la imagen adjunta y decime qué dice"
 ```
 
-Imprime lo que el bot publicaría y lee las respuestas a las preguntas por stdin. Los botones salen como líneas `:click <acción> <valor>`; pegar una por stdin la toca como `USIM` (`:click-as <usuario> …` para tocar como otro). `!repo …` corre una vez y guarda el repo del canal `SIM` en el `--state`. `--cancel-after <s>` manda `!parar` a los `s` segundos de arrancar el worker.
+Imprime lo que el bot publicaría y lee las respuestas a las preguntas por stdin. Los botones salen como líneas `:click <acción> <valor>`; pegar una por stdin la toca como `USIM` (`:click-as <usuario> …` para tocar como otro). `!repo …` corre una vez y guarda el repo del canal `SIM` en el `--state`. `--cancel-after <s>` manda `!parar` a los `s` segundos de arrancar el worker. `--attach <archivo>` (repetible) adjunta un archivo local al pedido como si viniera de Slack; lo que el worker deja en su carpeta de salida sale como `[archivo] <nombre> (<bytes> bytes)` en vez de subirse.
 
 ## Cómo funciona
 

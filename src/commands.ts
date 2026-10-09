@@ -32,7 +32,7 @@ export function parseCommand(text: string): Command | undefined {
 
 export function helpText(): string {
   const lines = COMMANDS.map((c) => `• \`${c.usage}\`${c.aliases.length > 1 ? ` (${c.aliases.slice(1).map((a) => `\`!${a}\``).join(", ")})` : ""}: ${c.help}`);
-  return ["Comandos, al principio de la mención:", ...lines, "Sin comando, te tomo el pedido como tarea en este hilo."].join("\n");
+  return ["Comandos, al principio de la mención:", ...lines, "Sin comando, te tomo el pedido como tarea en este hilo.", "Podés adjuntar imágenes o archivos al pedido o en el hilo; los que genere el worker los subo acá."].join("\n");
 }
 
 export type RepoArg = { kind: "show" } | { kind: "clear" } | { kind: "set"; repo: RepoRef } | { kind: "unknown"; text: string };
