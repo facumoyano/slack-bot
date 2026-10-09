@@ -1,4 +1,4 @@
-import { questionMessage } from "./blocks.ts";
+import { doneMessage, questionMessage } from "./blocks.ts";
 import type { Block } from "./blocks.ts";
 
 export type JobState =
@@ -215,7 +215,8 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
       if (!next) return undefined;
       const head = outcome === "succeeded" ? `✅ ${who} terminé.` : `❌ ${who} no pude completarlo.`;
       const pr = prUrl ? `*PR:* ${prUrl}` : "No se abrió PR.";
-      return { job: next, post: `${head}\n\n${summary}\n\n${pr}`, release: payload.dispatchId };
+      const { text, blocks } = doneMessage(`${head}\n\n${summary}\n\n${pr}`, prUrl);
+      return { job: next, post: text, blocks, release: payload.dispatchId };
     }
     default:
       return undefined;
