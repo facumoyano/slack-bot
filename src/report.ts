@@ -1,10 +1,11 @@
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { jobSlug } from "./files.ts";
 
 const REPORT_DIR = join(import.meta.dirname, "..", "data", "reports");
 
 export function reportPath(jobId: string): string {
-  return join(REPORT_DIR, `${jobId.replace(/[^A-Za-z0-9]+/g, "-")}.md`);
+  return join(REPORT_DIR, `${jobSlug(jobId)}.md`);
 }
 
 export async function readReport(jobId: string): Promise<string | undefined> {
