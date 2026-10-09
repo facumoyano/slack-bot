@@ -128,8 +128,10 @@ export async function startWorkerInTerminal(opts: { worktreeId: string; handle: 
   return { ...workerStart(result), worktreeId: opts.worktreeId };
 }
 
+/** Succeeds only when Orca's receipt says the dispatch is stopped; a repeat stop reports `stopped` with `alreadySettled`. */
 export async function stopWorker(dispatchId: string): Promise<void> {
-  await orca(["orchestration", "worker-stop", "--dispatch", dispatchId]);
+  const result = await orca(["orchestration", "worker-stop", "--dispatch", dispatchId]);
+  if (result.state !== "stopped") throw new OrcaError("not_stopped", `worker-stop left ${dispatchId} in state ${result.state}`, result);
 }
 
 export type Delivery = { deliveryId?: string; messages: InboxMessage[]; timedOut: boolean };
