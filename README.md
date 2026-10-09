@@ -12,23 +12,34 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 4. `npm install`.
 5. `gh auth setup-git` para que los workers puedan hacer `git push` con la sesión de `gh`.
 6. Invitá al bot a los canales (`/invite @alfred`).
-7. `scripts/start-in-orca.sh`. Abre una terminal de Orca llamada `slack-bot` que corre `node --env-file=.env src/main.ts`. Tiene que correr dentro de Orca porque la Run de orquestación se ata a la terminal que la crea.
+7. `scripts/start-in-orca.sh`. Abre una terminal de Orca llamada `slack-bot` que corre `node --env-file=.env src/main.ts`. Tiene que correr dentro de Orca porque la Run de orquestación se ata a la terminal que la crea. Si ya hay un bot corriendo desde este directorio, muestra su pid y no arranca otro.
 
 ## Uso
 
-- En el hilo de un mensaje con un issue (`https://github.com/org/repo/issues/12` o `org/repo#12`): `@alfred arreglalo`. Si el link está en tu mensaje, gana sobre el del mensaje raíz.
-- Si el worker tiene una duda, el bot la publica en el hilo mencionándote. Respondé en el hilo sin mencionar al bot.
-- Mientras trabaja, cualquier mensaje tuyo en el hilo le llega como indicación extra.
-- Cuando terminó, mencionalo de nuevo en el mismo hilo para pedir cambios. Sigue sobre el mismo worktree y la misma rama.
+- En el hilo de un mensaje con un issue (`https://github.com/org/repo/issues/12` o `org/repo#12`): `@alfred arreglalo`. Si el link está en tu mensaje, gana sobre el del mensaje raíz. Sin link, busca el nombre de un repo conocido y, si no, lo deduce del hilo y avisa que lo dedujo.
+- Un hilo es una tarea. Si el worker tiene una duda, el bot la publica en el hilo mencionándote. Respondé en el hilo sin mencionar al bot.
+- Mientras trabaja, cualquier mensaje tuyo en el hilo le llega como indicación extra. Avisa en el hilo con ⏳ cada hito (bug reproducido, causa encontrada, tests pasando, PR abierto), como mucho uno por minuto.
+- Cuando terminó, mencionalo de nuevo en el mismo hilo para pedir cambios. Retoma la misma sesión de Claude sobre el mismo worktree y la misma rama.
+- Para otra tarea desde un hilo que ya tiene una, usá `!nuevo`: el bot la sigue en un hilo nuevo del canal.
+
+Comandos. Van como primera palabra después de la mención, sin importar mayúsculas ni tildes. Una palabra sin `!` es texto común.
+
+- `!nuevo <pedido>` (`!new`): tarea aparte, en un hilo nuevo.
+- `!pregunta <pregunta>` (`!ask`): responde leyendo el repo en solo lectura, sin worktree ni PR, citando `archivo:línea` y la rama y el commit que leyó.
+- `!parar` (`!cancelar`, `!stop`): frena el worker del hilo. El trabajo queda en su rama; mencionalo de nuevo en el hilo para retomarlo.
+- `!aparte` (`!aside`): el bot ignora ese mensaje, con o sin mención. Sirve para hablar entre ustedes en el hilo mientras espera una respuesta.
+- `!ayuda` (`!help`): la lista de comandos.
 
 Para probar sin Slack:
 
 ```sh
 node scripts/simulate.ts "arreglá https://github.com/org/repo/issues/12"
 node scripts/simulate.ts --repo-path /ruta/a/repo/registrado/en/orca "Agregá un HELLO.md"
+node scripts/simulate.ts --repo-path /ruta/a/repo --cancel-after 90 "Agregá un HELLO.md"
+node scripts/simulate.ts --repo-path /ruta/a/repo "!pregunta ¿dónde se valida el token?"
 ```
 
-Imprime lo que el bot publicaría y lee las respuestas a las preguntas por stdin.
+Imprime lo que el bot publicaría y lee las respuestas a las preguntas por stdin. `--cancel-after <s>` manda `!parar` a los `s` segundos de arrancar el worker.
 
 ## Cómo funciona
 
@@ -43,11 +54,13 @@ Un solo proceso Node. Al arrancar retoma la Run guardada con `orca orchestration
             working ◀──── respuesta en el hilo ────┐
                │  question                         │
                ├──────────▶ awaiting_answer ───────┘
-               │ worker_done
-               ▼
-             done (✅ succeeded / ❌ failed, con link al PR)
-               │ nueva mención en el hilo
-               └──▶ starting (follow-up en el mismo worktree)
+               │
+               ├── worker_done ──▶ done (✅ / ❌, con link al PR)
+               └── !parar ───────▶ cancelled (⏹️, la rama queda)
+                                   (también desde starting y awaiting_answer)
+
+  done o cancelled + nueva mención en el hilo
+      ──▶ starting (follow-up: retoma la sesión de Claude en el mismo worktree)
 ```
 
 ## Tests
