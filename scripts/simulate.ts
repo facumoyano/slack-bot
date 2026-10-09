@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { answerQuestion } from "../src/ask.ts";
 import { handleMention, handleThreadReply } from "../src/bot.ts";
+import { parseCommand } from "../src/commands.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
 import { runInbox } from "../src/inbox.ts";
 import { jobId } from "../src/jobs.ts";
@@ -17,11 +18,12 @@ const { values, positionals } = parseArgs({
     "repo-path": { type: "string" },
     state: { type: "string", default: "data/simulate-state.json" },
     "follow-up": { type: "string" },
+    "cancel-after": { type: "string" },
   },
 });
 const request = positionals.join(" ").trim();
 if (!request) {
-  console.error('usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--follow-up "<text>"] "<request text>"');
+  console.error('usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--follow-up "<text>"] [--cancel-after <seconds>] "<request text or !command>"');
   process.exit(2);
 }
 
@@ -39,8 +41,10 @@ const poster: Poster = {
   },
 };
 
+const command = parseCommand(request);
+const text = command ? command.rest : request;
 const repoPath = values["repo-path"] ? resolve(values["repo-path"]) : undefined;
-const parsed = repoPath ? { owner: "local", name: basename(repoPath) } : parseTarget([request]);
+const parsed = repoPath ? { owner: "local", name: basename(repoPath) } : parseTarget([text]);
 const target = parsed && { ...parsed, source: "link" as const };
 const resolveRepo = repoPath ? () => repoIdForPath(repoPath) : findRepo;
 
@@ -55,10 +59,15 @@ const threadTs = (Date.now() / 1000).toFixed(6);
 const id = jobId(channel, threadTs);
 const finished = () => {
   const kind = store.data.jobs[id]?.state.kind;
-  return kind === "done" || kind === "failed";
+  return kind === "done" || kind === "failed" || kind === "cancelled";
 };
 
 console.log(`[${ts()}] [usuario USIM] @bot ${request}`);
+if (command?.name === "pregunta") {
+  await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command.name, target });
+  console.log(`[${ts()}] jobs en el hilo: ${store.data.jobs[id] ? "1" : "0"}`);
+  process.exit(0);
+}
 const stdin = createInterface({ input: process.stdin });
 stdin.on("line", (line) => {
   const text = line.trim();
@@ -71,7 +80,20 @@ stdin.on("line", (line) => {
 
 const inboxDeps = { orca: realOrca, poster, store, latestSession };
 const inbox = runInbox(inboxDeps, finished);
-await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text: request, target });
+const cancelAfter = Number(values["cancel-after"] ?? 0) * 1000;
+if (cancelAfter) {
+  const waitForWorker = setInterval(() => {
+    if (store.data.jobs[id]?.state.kind !== "working") return;
+    clearInterval(waitForWorker);
+    setTimeout(() => {
+      console.log(`[${ts()}] [usuario USIM menciona en el hilo] @bot !parar`);
+      handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user: "USIM", text: "", command: "parar" }).catch((err) =>
+        console.error("cancel failed:", err),
+      );
+    }, cancelAfter);
+  }, 500);
+}
+await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command?.name, target });
 if (!store.data.jobs[id]) process.exit(1);
 await inbox;
 
@@ -85,4 +107,4 @@ if (followUp && store.data.jobs[id].state.kind === "done") {
 }
 console.log(`[${ts()}] estado final: ${JSON.stringify(store.data.jobs[id])}`);
 stdin.close();
-process.exit(store.data.jobs[id].state.kind === "done" ? 0 : 1);
+process.exit(["done", "cancelled"].includes(store.data.jobs[id].state.kind) ? 0 : 1);
