@@ -1,8 +1,8 @@
 import bolt from "@slack/bolt";
 import { handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
-import { matchKnownRepo, messageTexts, parseTarget, stripMention } from "./parse.ts";
-import type { KnownRepo } from "./parse.ts";
+import { findTarget, messageTexts, newTaskRequest, stripMention } from "./parse.ts";
+import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { resolveWithClaude } from "./resolve.ts";
 
 export type SlackConfig = { botToken: string; appToken: string; allowedUsers: ReadonlySet<string> };
@@ -18,6 +18,11 @@ export function createSlack(config: SlackConfig) {
         if (err?.data?.error !== "already_reacted") throw err;
       });
     },
+    async postTopLevel(channel, text) {
+      const res = await app.client.chat.postMessage({ channel, text });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      return res.ts;
+    },
   };
 
   const CONTEXT_LIMIT = 12000;
@@ -26,7 +31,7 @@ export function createSlack(config: SlackConfig) {
     const auth = await app.client.auth.test();
     const botUserId = auth.user_id as string;
     const botId = auth.bot_id as string | undefined;
-    const full: BotDeps = { ...deps, poster };
+    const full: BotDeps = { ...deps, poster, botUserId };
 
     app.event("app_mention", async ({ event }) => {
       if (!event.user || event.bot_id) return;
@@ -49,28 +54,35 @@ export function createSlack(config: SlackConfig) {
             thread.push(messageTexts(m as Parameters<typeof messageTexts>[0]).map((t) => stripMention(t, botUserId)));
           }
         }
-        const ownTexts = messageTexts({ ...event, text });
-        const threadTexts = thread.flat();
-        const all = [...ownTexts, ...threadTexts];
-        let target = parseTarget(all);
-        if (!target) {
-          const repos = await deps.knownRepos();
-          target =
-            matchKnownRepo(all, repos) ??
-            (await resolveWithClaude(all, repos).catch((err) => {
+        const request = newTaskRequest(text);
+        const ownTexts = messageTexts({ ...event, text: request ?? text });
+        const all = [...ownTexts, ...thread.flat()];
+        const repos = await deps.knownRepos().catch((err) => {
+          console.error("listing known repos failed:", err);
+          return [];
+        });
+        const ownTarget = findTarget(ownTexts, repos);
+        // A separate task looks at the thread only through Claude, so an old link up-thread cannot claim it.
+        const target: FoundTarget | undefined =
+          (request !== undefined ? ownTarget : findTarget(all, repos)) ??
+          (await resolveWithClaude(all, repos).then(
+            (t) => t && { ...t, source: "inferred" as const },
+            (err) => {
               console.error("claude repo resolution failed:", err);
               return undefined;
-            }));
-        }
+            },
+          ));
         const context = [...thread].reverse().map((t) => t[0] ?? "").filter(Boolean).join("\n---\n").slice(-CONTEXT_LIMIT);
         await handleMention(full, {
           channel: event.channel,
           threadTs,
           ts: event.ts,
           user: event.user!,
-          text,
+          text: request ?? text,
           context: context || undefined,
           target,
+          ownTarget,
+          newTask: request !== undefined,
         });
       };
       work().catch(async (err) => {

@@ -21,6 +21,10 @@ function fakes(over: Partial<Orca> = {}) {
     async react(_c, ts, name) {
       reactions.push(`${ts}:${name}`);
     },
+    async postTopLevel(_c, text) {
+      posts.push(`[top] ${text}`);
+      return "200.1";
+    },
   };
   const orca: Orca = {
     async startWorker(o) {
@@ -202,7 +206,7 @@ test("mention starts a worker; a mention after done resumes the worker's session
     ts: "100.1",
     user: "U1",
     text: "arreglalo",
-    target: { owner: "acme", name: "api", issue: { number: 5, url: "https://github.com/acme/api/issues/5" } },
+    target: { owner: "acme", name: "api", issue: { number: 5, url: "https://github.com/acme/api/issues/5" }, source: "link" as const },
   };
   await handleMention(f.deps, mention);
   const id = "C1:100.1";
@@ -295,4 +299,114 @@ test("a follow-up without a recorded session starts a fresh worker", async () =>
   await handleMention(f.deps, followUpMention);
 
   assert.deepEqual(f.calls, ["followup r1::/wt/api"]);
+});
+
+const issue = (owner: string, name: string, n: number) => ({
+  owner,
+  name,
+  issue: { number: n, url: `https://github.com/${owner}/${name}/issues/${n}` },
+  source: "link" as const,
+});
+
+test("a mention naming the thread's own repo and issue is a normal follow-up", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
+
+  await handleMention(f.deps, { ...followUpMention, ownTarget: issue("Acme", "API", 5) });
+
+  assert.ok(f.calls.includes("resume term-1"));
+});
+
+test("a mention naming another issue or another repo is not mixed into the thread's task", async () => {
+  for (const ownTarget of [issue("acme", "api", 6), issue("acme", "web", 5)]) {
+    const f = fakes();
+    f.deps.botUserId = "UBOT";
+    f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
+
+    await handleMention(f.deps, { ...followUpMention, ownTarget });
+
+    assert.deepEqual(f.calls, []);
+    assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "done");
+    const other = `${ownTarget.owner}/${ownTarget.name}#${ownTarget.issue.number}`;
+    assert.equal(f.posts.at(-1), `Este hilo es de acme/api#5. Si querés que tome ${other} como tarea aparte, escribí <@UBOT> \`nuevo …\`.`);
+  }
+});
+
+test("nuevo inside a thread opens a new thread and keys the new job by its ts", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
+
+  await handleMention(f.deps, {
+    ...followUpMention,
+    text: "sumá tests a acme/web",
+    newTask: true,
+    target: { owner: "acme", name: "web", source: "link" },
+    context: "hilo original",
+  });
+
+  assert.match(f.posts[0], /^\[top\] 🆕 <@U1> pidió una tarea aparte desde otro hilo:\n> sumá tests a acme\/web/);
+  const job = f.store.data.jobs["C1:200.1"];
+  assert.equal(job.state.kind, "working");
+  assert.deepEqual(job.repo, { owner: "acme", name: "web", orcaRepoId: "r1" });
+  assert.equal(job.request, "sumá tests a acme/web");
+  assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "done", "the original thread's job is untouched");
+  assert.deepEqual(f.calls, ["start web-slack-2001"]);
+});
+
+test("a guessed repo is announced as a guess", async () => {
+  const f = fakes();
+  await handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "arreglá el login", target: { owner: "acme", name: "api", source: "inferred" } });
+
+  assert.match(f.posts[0], /🫡 tomo el pedido en acme\/api \(lo deduje del hilo; si no es ese, decime cuál\)/);
+  assert.equal(f.store.data.jobs["C1:1.1"].repoSource, "inferred");
+});
+
+test("correcting a guessed repo while working stops that worker and redoes the request on the named repo", async () => {
+  const f = fakes();
+  const guessed = { owner: "acme", name: "api", source: "inferred" as const };
+  await handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "arreglá el login", target: guessed });
+
+  await handleMention(f.deps, {
+    channel: "C1",
+    threadTs: "1.1",
+    ts: "1.5",
+    user: "U1",
+    text: "no, es billing",
+    target: guessed,
+    ownTarget: { owner: "acme", name: "billing", source: "name" },
+  });
+
+  assert.deepEqual(f.calls, ["start api-slack-11", "stop d1", "start billing-slack-11"]);
+  const job = f.store.data.jobs["C1:1.1"];
+  assert.deepEqual(job.repo, { owner: "acme", name: "billing", orcaRepoId: "r1" });
+  assert.equal(job.repoSource, "name");
+  assert.equal(job.request, "arreglá el login");
+  assert.equal(job.state.kind, "working");
+  assert.equal(f.posts.at(-1), "🔁 cambio a acme/billing.");
+});
+
+test("if the guessed worker cannot be stopped, no second worker starts", async () => {
+  const f = fakes({
+    async stopWorker() {
+      throw new Error("dispatch gone");
+    },
+  });
+  const guessed = { owner: "acme", name: "api", source: "inferred" as const };
+  await handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "arreglá el login", target: guessed });
+
+  await handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.5", user: "U1", text: "es billing", ownTarget: { owner: "acme", name: "billing", source: "name" } });
+
+  assert.deepEqual(f.calls, ["start api-slack-11"]);
+  assert.equal(f.store.data.jobs["C1:1.1"].state.kind, "working");
+  assert.match(f.posts.at(-1)!, /no pude frenar el worker de acme\/api \(dispatch gone\)/);
+});
+
+test("naming another repo in a thread whose repo came from a link is a conflict, not a correction", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await handleMention(f.deps, { ...followUpMention, ownTarget: { owner: "acme", name: "billing", source: "name" } });
+
+  assert.deepEqual(f.calls, []);
+  assert.match(f.posts.at(-1)!, /^Este hilo es de acme\/api#5\. .*mencioname con `nuevo …`\.$/);
 });

@@ -1,7 +1,7 @@
-import { isActive, jobId, newJob, transition } from "./jobs.ts";
+import { isActive, isOtherTask, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent } from "./jobs.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
-import type { GithubTarget } from "./parse.ts";
+import type { FoundTarget } from "./parse.ts";
 import { clearReport, reportPath } from "./report.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
@@ -10,6 +10,8 @@ import type { StoreHandle } from "./store.ts";
 export type Poster = {
   postToThread(job: Pick<Job, "slack">, text: string): Promise<void>;
   react(channel: string, messageTs: string, name: string): Promise<void>;
+  /** Starts a new thread in the channel; returns its ts. */
+  postTopLevel(channel: string, text: string): Promise<string>;
 };
 
 export type BotDeps = {
@@ -17,6 +19,7 @@ export type BotDeps = {
   poster: Poster;
   store: StoreHandle;
   resolveRepo(owner: string, name: string): Promise<string>;
+  botUserId?: string;
 };
 
 export type Mention = {
@@ -26,7 +29,12 @@ export type Mention = {
   user: string;
   text: string;
   context?: string;
-  target?: GithubTarget;
+  /** The target for a new job, from the mention and its thread. */
+  target?: FoundTarget;
+  /** A target named deterministically by the mention's own text, never by the thread or Claude. */
+  ownTarget?: FoundTarget;
+  /** The mention started with `nuevo`/`!new`: a separate task, `text` already stripped of the keyword. */
+  newTask?: boolean;
 };
 
 export type ThreadReply = { channel: string; threadTs: string; ts: string; text: string };
@@ -57,12 +65,54 @@ function errorText(err: unknown): string {
 }
 
 export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
+  if (m.newTask && m.threadTs !== m.ts) return startInNewThread(deps, m);
   const id = jobId(m.channel, m.threadTs);
   const existing = deps.store.data.jobs[id];
+  if (existing && !m.newTask && m.ownTarget && isOtherTask(existing, m.ownTarget)) {
+    if (isActive(existing) && existing.repoSource === "inferred" && !sameRepo(existing, m.ownTarget)) {
+      return correctRepo(deps, existing, m, m.ownTarget);
+    }
+    return replyOtherTask(deps, existing, m.ownTarget);
+  }
   if (existing && isActive(existing)) return handleThreadInput(deps, existing, m);
   if (existing?.state.kind === "done" && existing.worktreeId) return startFollowUp(deps, existing, m);
   if (starting.has(id)) return;
+  return startJob(deps, m);
+}
 
+function quote(text: string): string {
+  return text.split("\n").map((line) => `> ${line}`).join("\n");
+}
+
+async function startInNewThread(deps: BotDeps, m: Mention): Promise<void> {
+  const asked = `🆕 <@${m.user}> pidió una tarea aparte desde otro hilo${m.text ? `:\n${quote(m.text)}` : "."}`;
+  const threadTs = await deps.poster.postTopLevel(m.channel, asked);
+  await deps.poster.postToThread({ slack: { channel: m.channel, threadTs: m.threadTs, requester: m.user } }, "🆕 la sigo en un hilo aparte.");
+  return startJob(deps, { ...m, threadTs });
+}
+
+async function replyOtherTask(deps: BotDeps, job: Job, target: FoundTarget): Promise<void> {
+  const how = deps.botUserId ? `escribí <@${deps.botUserId}> \`nuevo …\`` : "mencioname con `nuevo …`";
+  await deps.poster.postToThread(job, `Este hilo es de ${jobLabel(job)}. Si querés que tome ${targetLabel(target)} como tarea aparte, ${how}.`);
+}
+
+/** The user named the right repo after the bot guessed wrong: stop the guess and redo the original request there. */
+async function correctRepo(deps: BotDeps, job: Job, m: Mention, target: FoundTarget): Promise<void> {
+  if (!job.dispatchId) return handleThreadInput(deps, job, m);
+  const label = targetLabel(target);
+  try {
+    await deps.orca.stopWorker(job.dispatchId);
+  } catch (err) {
+    console.error(`worker-stop ${job.dispatchId} failed:`, err);
+    await deps.poster.postToThread(job, `❌ no pude frenar el worker de ${jobLabel(job)} (${errorText(err)}), así que no arranco otro en ${label}.`);
+    return;
+  }
+  commit(deps, job, { kind: "superseded", reason: `el usuario corrigió el repo a ${label}` });
+  await startJob(deps, { ...m, user: job.slack.requester, text: job.request, target }, `🔁 cambio a ${label}.`);
+}
+
+async function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
+  const id = jobId(m.channel, m.threadTs);
   const where = { slack: { channel: m.channel, threadTs: m.threadTs, requester: m.user } };
   if (!m.target) {
     await deps.poster.postToThread(
@@ -72,12 +122,13 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
     return;
   }
 
-  const { owner, name, issue } = m.target;
-  const label = issue ? `${owner}/${name}#${issue.number}` : `${owner}/${name}`;
+  const { owner, name, issue, source } = m.target;
+  const label = targetLabel(m.target);
+  const guessed = source === "inferred" ? " (lo deduje del hilo; si no es ese, decime cuál)" : "";
   starting.add(id);
   try {
     await deps.poster.react(m.channel, m.ts, "saluting_face");
-    await deps.poster.postToThread(where, `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}. Te aviso por acá.`);
+    await deps.poster.postToThread(where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`);
     let orcaRepoId: string;
     try {
       orcaRepoId = await deps.resolveRepo(owner, name);
@@ -85,7 +136,7 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
       await deps.poster.postToThread(where, `❌ <@${m.user}> no pude preparar el repo ${owner}/${name}: ${errorText(err)}`);
       return;
     }
-    const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, issue, request: m.text });
+    const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text });
     deps.store.data.jobs[job.id] = job;
     deps.store.save();
     await launch(deps, job, () =>
