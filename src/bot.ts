@@ -1,4 +1,4 @@
-import { answeredMessage } from "./blocks.ts";
+import { answeredMessage, plainMessage, startMessage } from "./blocks.ts";
 import type { Block, Click } from "./blocks.ts";
 import { helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
@@ -76,6 +76,14 @@ function commit(deps: BotDeps, job: Job, ev: JobEvent): Job | undefined {
   return next;
 }
 
+/** A commit that can end the active run; the store write stays synchronous, the Slack edit follows it. */
+async function commitEnding(deps: BotDeps, job: Job, ev: JobEvent): Promise<Job | undefined> {
+  const before = deps.store.data.jobs[job.id] ?? job;
+  const next = commit(deps, job, ev);
+  await retireStart(deps, before, next);
+  return next;
+}
+
 function slug(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -149,8 +157,25 @@ async function correctRepo(deps: BotDeps, job: Job, m: Mention, target: FoundTar
     await deps.poster.postToThread(job, `❌ no pude frenar el worker de ${jobLabel(job)} (${errorText(err)}), así que no arranco otro en ${label}.`);
     return;
   }
-  commit(deps, job, { kind: "superseded", reason: `el usuario corrigió el repo a ${label}` });
+  await commitEnding(deps, job, { kind: "superseded", reason: `el usuario corrigió el repo a ${label}` });
   await startJob(deps, { ...m, user: job.slack.requester, text: job.request, target }, `🔁 cambio a ${label}.`);
+}
+
+/** Posts the message that announces a worker, with its stop button. */
+async function postStart(deps: BotDeps, where: Pick<Job, "slack">, text: string): Promise<{ ts: string; text: string }> {
+  const msg = startMessage({ jobId: jobId(where.slack.channel, where.slack.threadTs), text });
+  return { ts: await deps.poster.postToThread(where, msg.text, msg.blocks), text };
+}
+
+async function retireButtons(deps: Pick<BotDeps, "poster">, channel: string, msg: { ts: string; text: string }): Promise<void> {
+  const plain = plainMessage(msg.text);
+  await deps.poster.update(channel, msg.ts, plain.text, plain.blocks).catch((err) => console.error(`removing buttons from ${channel}/${msg.ts} failed:`, err));
+}
+
+/** Call after any commit that may have ended the job's active run: its start message loses its buttons. */
+export async function retireStart(deps: Pick<BotDeps, "poster">, before: Job | undefined, after: Job | undefined): Promise<void> {
+  if (!before?.startMsg || !after || !isActive(before) || isActive(after)) return;
+  await retireButtons(deps, before.slack.channel, before.startMsg);
 }
 
 function startJob(deps: BotDeps, m: Mention, intro?: string): Promise<void> {
@@ -175,15 +200,16 @@ async function startJobOnce(deps: BotDeps, m: Mention, intro?: string): Promise<
   const guessed =
     source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : source === "channel" ? " (repo del canal)" : "";
   await deps.poster.react(m.channel, m.ts, "saluting_face");
-  await deps.poster.postToThread(where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`);
+  const startMsg = await postStart(deps, where, intro ?? `🫡 tomo ${issue ? "el issue" : "el pedido en"} ${label}${guessed}. Te aviso por acá.`);
   let orcaRepoId: string;
   try {
     orcaRepoId = await deps.resolveRepo(owner, name);
   } catch (err) {
+    await retireButtons(deps, where.slack.channel, startMsg);
     await deps.poster.postToThread(where, `❌ <@${m.user}> no pude preparar el repo ${owner}/${name}: ${errorText(err)}`);
     return;
   }
-  const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text });
+  const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text, startMsg });
   deps.store.data.jobs[job.id] = job;
   deps.store.save();
   await launch(deps, job, () =>
@@ -205,7 +231,12 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention): Promise<void>
   const next = commit(deps, job, { kind: "follow_up", request: m.text });
   if (!next) return;
   await deps.poster.react(m.channel, m.ts, "saluting_face");
-  await deps.poster.postToThread(next, "🫡 sigo sobre el mismo worktree. Te aviso por acá.");
+  const startMsg = await postStart(deps, next, "🫡 sigo sobre el mismo worktree. Te aviso por acá.");
+  const current = deps.store.data.jobs[next.id];
+  if (current === next) {
+    deps.store.data.jobs[next.id] = { ...next, startMsg };
+    deps.store.save();
+  }
   const title = `${taskTitle(next)} (follow-up)`;
   const report = reportPath(next.id);
   await launch(deps, next, async () => {
@@ -305,7 +336,7 @@ async function channelRepo(deps: BotDeps, m: Mention): Promise<void> {
   await deps.poster.postToThread(threadOf(m), text);
 }
 
-async function cancel(deps: BotDeps, m: Mention): Promise<void> {
+async function cancel(deps: BotDeps, m: Pick<Mention, "channel" | "threadTs" | "user">): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
   // A start in flight has no dispatchId yet; let it settle so there is a worker to stop.
   await starting.get(id);
@@ -329,7 +360,7 @@ async function cancel(deps: BotDeps, m: Mention): Promise<void> {
         deps.orca.currentBranch(worktreeId).catch(() => undefined),
       ])
     : [];
-  if (!commit(deps, job, { kind: "cancelled", sessionId })) return;
+  if (!(await commitEnding(deps, job, { kind: "cancelled", sessionId }))) return;
   await deps.poster.postToThread(
     job,
     `⏹️ cancelado. El trabajo queda en la rama ${branch ? `\`${branch}\`` : "del worktree"} por si querés retomarlo (mencioname en este hilo).`,
@@ -349,7 +380,7 @@ async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca[
     commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId });
   } catch (err) {
     console.error(`worker start failed for ${job.id}:`, err);
-    commit(deps, job, { kind: "start_failed", error: errorText(err) });
+    await commitEnding(deps, job, { kind: "start_failed", error: errorText(err) });
     await deps.poster.postToThread(job, `❌ <@${job.slack.requester}> no pude arrancar el worker: ${errorText(err)}`);
   }
 }
@@ -396,6 +427,9 @@ export async function handleThreadReply(deps: BotDeps, r: ThreadReply): Promise<
   return true;
 }
 
+/** Jobs a stop click is already stopping, so a double click stops once. */
+const stopping = new Set<string>();
+
 const STALE = "Ese botón ya no es válido: el hilo siguió de largo.";
 
 /** Buttons run the same paths as typed input. A click on a message the job has moved past changes nothing. */
@@ -406,9 +440,20 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
     return;
   }
   const { click } = input;
-  const job = click.jobId === jobId(input.channel, input.threadTs) ? deps.store.data.jobs[click.jobId] : undefined;
+  if (click.jobId !== jobId(input.channel, input.threadTs)) return deps.poster.ephemeral(where, input.user, STALE);
+  // A start in flight posts its buttons before the job is stored.
+  await starting.get(click.jobId);
+  const job = deps.store.data.jobs[click.jobId];
+  const onStartMsg = job !== undefined && isActive(job) && job.startMsg?.ts === input.messageTs;
   let handled = false;
   switch (click.kind) {
+    case "stop":
+      if (onStartMsg && !stopping.has(job.id)) {
+        handled = true;
+        stopping.add(job.id);
+        await cancel(deps, input).finally(() => stopping.delete(job.id));
+      }
+      break;
     case "answer": {
       const state = job?.state;
       const option = state?.kind === "awaiting_answer" && state.questionMsgId === click.questionMsgId && state.postTs === input.messageTs ? state.options[click.option] : undefined;

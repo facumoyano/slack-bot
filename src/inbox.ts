@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
-import { startsSettled } from "./bot.ts";
+import { retireStart, startsSettled } from "./bot.ts";
 import { readReport, slackPost } from "./report.ts";
 import type { Poster } from "./bot.ts";
 import { worktreePath } from "./orca.ts";
@@ -42,8 +42,10 @@ async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | u
 }
 
 /** Commits an outcome unless a mention changed the job (a cancel, a follow-up) while it was being posted. */
-function commitOutcome(deps: InboxDeps, before: Job | undefined, outcome: InboxOutcome): void {
-  if (deps.store.data.jobs[outcome.job.id] === before) deps.store.data.jobs[outcome.job.id] = outcome.job;
+function commitOutcome(deps: InboxDeps, before: Job | undefined, outcome: InboxOutcome): boolean {
+  if (deps.store.data.jobs[outcome.job.id] !== before) return false;
+  deps.store.data.jobs[outcome.job.id] = outcome.job;
+  return true;
 }
 
 /**
@@ -66,9 +68,10 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
       const ts = await deps.poster.postToThread(outcome.job, outcome.post, outcome.blocks);
       if (outcome.blocks && msg.type === "question") outcome.job = transition(outcome.job, { kind: "question_posted", msgId: msg.id, ts }) ?? outcome.job;
     }
-    if (outcome) commitOutcome(deps, before, outcome);
+    const committed = outcome !== undefined && commitOutcome(deps, before, outcome);
     markProcessed(data, msg.id);
     deps.store.save();
+    if (committed) await retireStart(deps, before, outcome.job);
     if (outcome?.release) {
       await deps.orca.release(outcome.release).catch((err) => console.error(`worker-release ${outcome.release} failed:`, err));
     }

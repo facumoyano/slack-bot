@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseClick } from "../src/blocks.ts";
-import { handleClick, handleThreadReply } from "../src/bot.ts";
+import { handleClick, handleMention, handleThreadReply } from "../src/bot.ts";
 import type { ClickInput } from "../src/bot.ts";
 import { processBatch } from "../src/inbox.ts";
 import type { InboxMessage } from "../src/jobs.ts";
@@ -103,4 +103,41 @@ test("an older question's buttons cannot answer a newer question", async () => {
 
   assert.deepEqual(f.calls, []);
   assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "awaiting_answer");
+});
+
+const mention = { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "arreglá el login" };
+
+function startButtons(f: ReturnType<typeof fakes>) {
+  const start = f.messages.find((m) => m.text.startsWith("🫡") || m.text.startsWith("🔁"))!;
+  const elements = (start.blocks ?? []).flatMap((b: any) => (b.type === "actions" ? b.elements : []));
+  return { start, elements };
+}
+
+test("the stop button does what !parar does and then disappears; a second click stops nothing", async () => {
+  const f = fakes();
+  await handleMention(f.deps, { ...mention, target: { owner: "acme", name: "api", source: "link" } });
+  const { start, elements } = startButtons(f);
+  assert.deepEqual(elements.map((e: any) => e.type), ["button"], "no repo picker for a repo the user named");
+  const click: ClickInput = { click: parseClick(elements[0].action_id, elements[0].value)!, user: "U1", channel: "C1", threadTs: "1.1", messageTs: start.ts };
+
+  await Promise.all([handleClick(f.deps, click), handleClick(f.deps, click)]);
+  await handleClick(f.deps, click);
+
+  assert.deepEqual(f.calls, ["start api-slack-11", "stop d1"]);
+  assert.equal(f.store.data.jobs["C1:1.1"].state.kind, "cancelled");
+  assert.match(f.posts.at(-1)!, /^⏹️ cancelado\. El trabajo queda en la rama `api-issue-5`/);
+  assert.deepEqual(f.updates.map((u) => [u.ts, u.text, u.blocks?.some((b) => b.type === "actions")]), [[start.ts, start.text, false]]);
+  assert.equal(f.ephemerals.length, 2);
+});
+
+test("a finished job's start message loses its stop button", async () => {
+  const f = fakes();
+  await handleMention(f.deps, { ...mention, target: { owner: "acme", name: "api", source: "link" } });
+  const { start } = startButtons(f);
+
+  await processBatch(f.deps, [
+    { id: "w1", type: "worker_done", body: "Listo\nPR: https://github.com/acme/api/pull/1", payload: JSON.stringify({ dispatchId: "d1", outcome: "succeeded" }) },
+  ]);
+
+  assert.deepEqual(f.updates.map((u) => u.ts), [start.ts]);
 });

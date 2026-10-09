@@ -33,6 +33,8 @@ export type Job = {
   dispatchId?: string;
   /** The last worker's Claude session, resumed by the next follow-up. */
   sessionId?: string;
+  /** The message announcing the current worker, whose buttons are retired when the job leaves the active states. */
+  startMsg?: { ts: string; text: string };
   /** Last ⏳ post time (ms) and the newest status held back because it came too soon after it. */
   progress?: { postedAt: number; pending?: string };
   state: JobState;
@@ -129,7 +131,7 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       return { ...job, sessionId: ev.sessionId ?? job.sessionId, state: { kind: "cancelled" } };
     case "follow_up":
       if (from !== "done" && from !== "cancelled") return undefined;
-      return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, progress: undefined, state: { kind: "starting" } };
+      return { ...job, request: ev.request, taskId: undefined, dispatchId: undefined, progress: undefined, startMsg: undefined, state: { kind: "starting" } };
     case "superseded":
       if (!isActive(job)) return undefined;
       return { ...job, state: { kind: "failed", error: ev.reason } };
