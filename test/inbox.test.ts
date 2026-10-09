@@ -357,7 +357,7 @@ test("a guessed repo is announced as a guess", async () => {
   const f = fakes();
   await handleMention(f.deps, { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "arreglá el login", target: { owner: "acme", name: "api", source: "inferred" } });
 
-  assert.match(f.posts[0], /🫡 tomo el pedido en acme\/api \(lo deduje del hilo; si no es ese, decime cuál\)/);
+  assert.match(f.posts[0], /🫡 tomo el pedido en acme\/api \(lo deduje del hilo; si no es ese, mencioname con el repo correcto\)/);
   assert.equal(f.store.data.jobs["C1:1.1"].repoSource, "inferred");
 });
 
