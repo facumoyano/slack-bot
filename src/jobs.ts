@@ -193,6 +193,11 @@ export type InboxOutcome = { job: Job; post?: string; blocks?: Block[]; release?
 /** What the caller read from disk or GitHub for a worker_done; ignored for other messages. */
 export type DoneExtras = { prUrlFallback?: string; report?: string; sessionId?: string };
 
+function doneHead(mode: Mode, outcome: "succeeded" | "failed", who: string): string {
+  if (outcome === "failed") return `❌ ${who} no pude completarlo.`;
+  return mode === "investigate" ? `🔎 ${who} listo.` : `✅ ${who} terminé.`;
+}
+
 /**
  * Decides what one orchestration message means for its Job. Pure: the caller posts,
  * releases, then commits `job` and marks the message processed.
@@ -230,9 +235,12 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: DoneE
       const prUrl = extractPrUrl(msg.body ?? "") ?? extractPrUrl(report ?? "") ?? extras.prUrlFallback;
       const next = transition(job, { kind: "worker_done", outcome, summary, prUrl, sessionId });
       if (!next) return undefined;
-      const head = outcome === "succeeded" ? `✅ ${who} terminé.` : `❌ ${who} no pude completarlo.`;
-      const pr = prUrl ? `*PR:* ${prUrl}` : "No se abrió PR.";
-      const { text, blocks } = doneMessage(`${head}\n\n${summary}\n\n${pr}`, prUrl);
+      const head = doneHead(job.mode, outcome, who);
+      // An investigation's PR, if the thread has one from an earlier run, stays recorded for the next follow-up but is not this run's news.
+      const { text, blocks } =
+        job.mode === "investigate"
+          ? doneMessage(`${head}\n\n${summary}`)
+          : doneMessage(`${head}\n\n${summary}\n\n${prUrl ? `*PR:* ${prUrl}` : "No se abrió PR."}`, prUrl);
       return { job: next, post: text, blocks, release: payload.dispatchId };
     }
     default:

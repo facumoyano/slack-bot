@@ -5,7 +5,7 @@ import type { Mention } from "../src/bot.ts";
 import { processBatch } from "../src/inbox.ts";
 import type { InboxMessage } from "../src/jobs.ts";
 import { planPath } from "../src/report.ts";
-import { fakes } from "./fakes.ts";
+import { fakes, workingJob } from "./fakes.ts";
 
 const target = { owner: "acme", name: "api", source: "link" as const };
 
@@ -26,6 +26,19 @@ test("!investiga starts a worker with the investigate spec and announces it with
   assert.equal(f.posts[0], "🔎 investigo en acme/api…");
   assert.match(f.specs[0], /Investigation playbook/);
   assert.doesNotMatch(f.specs[0], /gh pr create/);
+});
+
+test("an investigation's worker_done without a PR posts 🔎 listo with the report, no ❌, no PR line, no Ver PR, even if the branch has a PR", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = { ...workingJob(), mode: "investigate" };
+
+  await processBatch(f.deps, [done("m1", "Respondí la pregunta.")]);
+
+  const post = f.messages[0];
+  assert.equal(post.text, "🔎 <@U1> listo.\n\nRespondí la pregunta.");
+  assert.equal(post.blocks, undefined, "no Ver PR button");
+  assert.equal(f.store.data.jobs["C1:100.1"].state.kind, "done");
+  assert.ok(f.calls.includes("release d1"));
 });
 
 test("a plain mention after an investigation resumes the same session as a change run", async () => {
