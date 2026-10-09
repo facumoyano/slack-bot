@@ -10,7 +10,7 @@ import type { Block } from "../src/blocks.ts";
 import { runInbox } from "../src/inbox.ts";
 import { jobId } from "../src/jobs.ts";
 import { ensureRun, findRepo, knownGithubRepos, realOrca, repoIdForPath } from "../src/orca.ts";
-import { parseTarget } from "../src/parse.ts";
+import { chooseTarget } from "../src/parse.ts";
 import { latestSession } from "../src/session.ts";
 import { openStore } from "../src/store.ts";
 
@@ -80,8 +80,6 @@ const poster: Poster = {
 const command = parseCommand(request);
 const text = command ? command.rest : request;
 const repoPath = values["repo-path"] ? resolve(values["repo-path"]) : undefined;
-const parsed = repoPath ? { owner: "local", name: basename(repoPath) } : parseTarget([text]);
-const target = parsed && { ...parsed, source: "link" as const };
 const local = repoPath ? [{ owner: "local", name: basename(repoPath) }] : [];
 const resolveRepo = (owner: string, name: string) =>
   repoPath && owner === "local" && name === basename(repoPath) ? repoIdForPath(repoPath) : findRepo(owner, name);
@@ -94,6 +92,10 @@ console.log(`[${ts()}] run ${store.data.runId}`);
 
 const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion };
 const channel = "SIM";
+// The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
+const target =
+  (await chooseTarget({ own: [text], thread: [], repos: await knownRepos(), channelRepo: store.data.channels[channel], infer: async () => undefined })) ??
+  (local[0] && { ...local[0], source: "link" as const });
 const threadTs = (Date.now() / 1000).toFixed(6);
 const id = jobId(channel, threadTs);
 const finished = () => {
