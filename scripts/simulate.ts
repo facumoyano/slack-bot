@@ -171,8 +171,9 @@ const followUp = values["follow-up"]?.trim();
 if (followUp && store.data.jobs[id].state.kind === "done") {
   console.log(`[${ts()}] estado intermedio: ${JSON.stringify(store.data.jobs[id])}`);
   console.log(`[${ts()}] [usuario USIM menciona en el hilo] @bot ${followUp}`);
+  const followUpCommand = parseCommand(followUp);
   // The job is still done until the mention lands, and runInbox would stop at once on a finished job.
-  await handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user: "USIM", text: followUp });
+  await handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user: "USIM", text: followUpCommand?.rest ?? followUp, command: followUpCommand?.name });
   await runInbox(inboxDeps, finished);
 }
 console.log(`[${ts()}] estado final: ${JSON.stringify(store.data.jobs[id])}`);
