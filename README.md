@@ -24,7 +24,7 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 - El reporte final trae un botón **Ver PR** si hay PR.
 - Solo los usuarios de `ALLOWED_SLACK_USERS` pueden tocar botones; a los demás el bot les contesta en privado y no cambia nada. Un botón viejo (de una pregunta ya respondida o un trabajo ya terminado) contesta en privado que ya no es válido.
 - Mientras trabaja, cualquier mensaje tuyo en el hilo le llega como indicación extra. Avisa en el hilo con ⏳ cada hito (bug reproducido, causa encontrada, tests pasando, PR abierto), como mucho uno por minuto.
-- Cuando terminó, mencionalo de nuevo en el mismo hilo para pedir cambios. Retoma la misma sesión de Claude sobre el mismo worktree y la misma rama.
+- Cuando terminó, mencionalo de nuevo en el mismo hilo para pedir cambios. Retoma la misma sesión de Claude sobre el mismo worktree y la misma rama. Cada mención elige el modo de esa corrida: sin comando es una tarea que termina en PR (por ejemplo `ahora arreglalo` después de un `!investiga`, recordando todo lo que investigó), `!investiga` investiga y `!plan` muestra un plan antes de tocar código.
 - Para otra tarea desde un hilo que ya tiene una, usá `!nuevo`: el bot la sigue en un hilo nuevo del canal.
 - Archivos de ida: adjuntá imágenes, PDFs, logs o lo que sea a la mención, a mensajes anteriores del hilo o a una respuesta en el hilo mientras trabaja (sirve un archivo sin texto, también como respuesta a una pregunta). El bot los baja a `data/files/<hilo>/in/` y le pasa al worker la ruta de cada uno; `!pregunta` también los lee. No baja archivos de más de 50 MB ni los externos (Google Drive y similares), y avisa en el hilo cuáles no pudo bajar.
 - Archivos de vuelta: el worker deja en `data/files/<hilo>/out/` lo que conviene que veas (capturas o un video corto de un cambio de UI, un PDF o deck, un log, un CSV). El bot los sube al hilo junto con la próxima pregunta, avance o reporte final, y los mueve a `out/sent/` para no subirlos dos veces. Si una subida falla, avisa con ⚠️ y sigue.
@@ -32,7 +32,9 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 Comandos. Van como primera palabra después de la mención, sin importar mayúsculas ni tildes. Una palabra sin `!` es texto común.
 
 - `!nuevo <pedido>` (`!new`): tarea aparte, en un hilo nuevo.
-- `!pregunta <pregunta>` (`!ask`): responde leyendo el repo en solo lectura, sin worktree ni PR, citando `archivo:línea` y la rama y el commit que leyó.
+- `!pregunta <pregunta>` (`!ask`): respuesta rápida leyendo el repo en solo lectura, sin worktree ni PR, citando `archivo:línea` y la rama y el commit que leyó. Para algo que pide correr código o tests, usá `!investiga`.
+- `!investiga <pregunta>` (`!investigate`): investigación a fondo con un worker, igual que una tarea (worktree, avances, preguntas con botones, `!parar`, archivos) pero sin PR: puede correr código, tests, la historia de git, `gh` y la web, y no commitea ni pushea. Cierra con `🔎 listo.` y un reporte con **Pregunta**, **Respuesta corta**, **Hallazgos** (con `archivo:línea` y evidencia), **Cómo lo verifiqué**, **Recomendación** y **Pendiente**; la evidencia (logs, CSV, capturas) sube al hilo.
+- `!plan <pedido>` (`!planear`): una tarea que frena antes de escribir código. El worker entiende el pedido, escribe un plan y el bot lo publica (`📋 *Plan*`) con los botones **Aprobar** y **Cambiar**. **Aprobar** sigue hasta el PR. **Cambiar** te pide en privado que escribas en el hilo qué cambiar; lo que escribas (también sin tocar el botón) vuelve al worker, que corrige el plan y lo vuelve a mostrar. Un plan sin cambios no se publica dos veces.
 - `!repo <repo>`: fija el repo por defecto del canal (link de GitHub, `owner/nombre` o nombre exacto de un repo de Orca). `!repo` solo muestra el actual y los repos conocidos; `!repo borrar` (`!repo clear`) lo saca.
 - `!parar` (`!cancelar`, `!stop`): frena el worker del hilo. El trabajo queda en su rama; mencionalo de nuevo en el hilo para retomarlo.
 - `!aparte` (`!aside`): el bot ignora ese mensaje, con o sin mención. Sirve para hablar entre ustedes en el hilo mientras espera una respuesta.
@@ -45,6 +47,9 @@ node scripts/simulate.ts "arreglá https://github.com/org/repo/issues/12"
 node scripts/simulate.ts --repo-path /ruta/a/repo/registrado/en/orca "Agregá un HELLO.md"
 node scripts/simulate.ts --repo-path /ruta/a/repo --cancel-after 90 "Agregá un HELLO.md"
 node scripts/simulate.ts --repo-path /ruta/a/repo "!pregunta ¿dónde se valida el token?"
+node scripts/simulate.ts --repo-path /ruta/a/repo "!investiga ¿por qué falla el build?"
+node scripts/simulate.ts --repo-path /ruta/a/repo --follow-up "ahora arreglalo" "!investiga ¿por qué falla el build?"
+node scripts/simulate.ts --repo-path /ruta/a/repo "!plan Agregá un HELLO.md"
 node scripts/simulate.ts --repo-path /ruta/a/repo --attach captura.png "Leé la imagen adjunta y decime qué dice"
 ```
 
@@ -71,6 +76,8 @@ Un solo proceso Node. Al arrancar retoma la Run guardada con `orca orchestration
   done o cancelled + nueva mención en el hilo
       ──▶ starting (follow-up: retoma la sesión de Claude en el mismo worktree)
 ```
+
+Cada corrida tiene un modo (`Job.mode`): `change` (la tarea común, termina en PR), `investigate` (`!investiga`, termina en un reporte sin PR) o `plan` (`!plan`, una `change` con una pregunta de aprobación antes de implementar). El modo cambia la spec del worker, el mensaje de arranque y el reporte final; los estados son los mismos. El plan lo escribe el worker en `data/reports/<hilo>.plan.md`; cuando llega una pregunta de un job en modo plan y ese archivo cambió desde la última vez, el bot lo publica antes de la pregunta. Va en un mensaje propio porque el mensaje de la pregunta se reescribe al responderla; así el plan aprobado queda en el hilo. Usa bloques de hasta 3000 caracteres en vez del corte de 3500 de los reportes, así que solo se recorta un plan de más de 39.000 caracteres.
 
 ## Tests
 
