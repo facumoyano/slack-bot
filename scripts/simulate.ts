@@ -1,6 +1,7 @@
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { basename, resolve } from "node:path";
+import { basename, extname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { answerQuestion } from "../src/ask.ts";
 import { handleClick, handleMention, handleThreadReply } from "../src/bot.ts";
@@ -23,11 +24,12 @@ const { values, positionals } = parseArgs({
     state: { type: "string", default: "data/simulate-state.json" },
     "follow-up": { type: "string" },
     "cancel-after": { type: "string" },
+    attach: { type: "string", multiple: true },
   },
 });
 const request = positionals.join(" ").trim();
 if (!request) {
-  console.error('usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--follow-up "<text>"] [--cancel-after <seconds>] "<request text or !command>"');
+  console.error('usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... "<request text or !command>"');
   process.exit(2);
 }
 
@@ -95,8 +97,16 @@ store.data.runId = await ensureRun(store.data.runId);
 store.save();
 console.log(`[${ts()}] run ${store.data.runId}`);
 
+const MIMETYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".pdf": "application/pdf", ".txt": "text/plain", ".csv": "text/csv", ".md": "text/markdown" };
+
+/** Local files as the Slack file objects of the request message, served from disk instead of Slack. */
+const attached = (values.attach ?? []).map((path, i) => {
+  const abs = resolve(path);
+  return { id: `FSIM${i + 1}`, name: basename(abs), mimetype: MIMETYPES[extname(abs).toLowerCase()] ?? "application/octet-stream", url_private_download: pathToFileURL(abs).href };
+});
+
 async function fetchFile(url: string): Promise<Response> {
-  throw new Error(`the simulator cannot fetch ${url}`);
+  return new Response(await readFile(fileURLToPath(url)));
 }
 
 const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile };
@@ -114,7 +124,7 @@ const finished = () => {
 
 console.log(`[${ts()}] [usuario USIM] @bot ${request}`);
 if (command?.name === "pregunta" || command?.name === "repo") {
-  await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command.name, target });
+  await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command.name, target, files: attached });
   console.log(`[${ts()}] jobs en el hilo: ${store.data.jobs[id] ? "1" : "0"}`);
   process.exit(0);
 }
@@ -153,7 +163,7 @@ if (cancelAfter) {
     }, cancelAfter);
   }, 500);
 }
-await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command?.name, target });
+await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command?.name, target, files: attached });
 if (!store.data.jobs[id]) process.exit(1);
 await inbox;
 
