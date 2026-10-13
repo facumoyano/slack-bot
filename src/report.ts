@@ -13,6 +13,11 @@ export function planPath(jobId: string): string {
   return join(REPORT_DIR, `${jobSlug(jobId)}.plan.md`);
 }
 
+/** What a relay worker writes: the thread message with its header, or its private digest for the owner. */
+export function relayPath(jobId: string): string {
+  return join(REPORT_DIR, `${jobSlug(jobId)}.relay.md`);
+}
+
 async function readText(path: string): Promise<string | undefined> {
   const text = await readFile(path, "utf8").catch(() => undefined);
   return text?.trim() || undefined;
@@ -26,9 +31,13 @@ export function readPlan(jobId: string): Promise<string | undefined> {
   return readText(planPath(jobId));
 }
 
-/** A new run starts with no report or plan, so a previous run's files are never posted as this one's. */
+export function readRelay(jobId: string): Promise<string | undefined> {
+  return readText(relayPath(jobId));
+}
+
+/** A new run starts with no report, plan or relay file, so a previous run's files are never posted as this one's. */
 export async function clearReports(jobId: string): Promise<void> {
-  await Promise.all([rm(reportPath(jobId), { force: true }), rm(planPath(jobId), { force: true })]);
+  await Promise.all([reportPath(jobId), planPath(jobId), relayPath(jobId)].map((path) => rm(path, { force: true })));
 }
 
 function inline(line: string): string {

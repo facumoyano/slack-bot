@@ -1,0 +1,237 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { expireRelays, handleDm, handleMention, handleThreadReply } from "../src/bot.ts";
+import { processBatch } from "../src/inbox.ts";
+import { RELAY_REPLY_TTL_MS, isResumable, newJob, transition } from "../src/jobs.ts";
+import type { InboxMessage, Job } from "../src/jobs.ts";
+import { relayPath } from "../src/report.ts";
+import { openStore } from "../src/store.ts";
+import { fakes } from "./fakes.ts";
+
+const CHANNEL = "CRELAY";
+const THREAD = "1791548002.024869";
+const ID = `${CHANNEL}:${THREAD}`;
+const LINK = `https://acme.slack.com/archives/${CHANNEL}/p1791548002024869`;
+const THREAD_LINK = `https://slack.test/${CHANNEL}/${THREAD}`;
+const RESUME = ["terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"];
+
+function doneJob(): Job {
+  const job = newJob({
+    slack: { channel: CHANNEL, threadTs: THREAD, requester: "U1" },
+    repo: { owner: "acme", name: "api", orcaRepoId: "r1" },
+    issue: { number: 486, url: "https://github.com/acme/api/pull/486" },
+    request: "guardá los permisos",
+    mode: "change",
+  });
+  const working = transition(job, { kind: "started", worktreeId: "r1::/wt/api", taskId: "t1", dispatchId: "d1" })!;
+  return transition(working, { kind: "worker_done", outcome: "succeeded", summary: "Guardé los permisos.", prUrl: "https://github.com/acme/api/pull/486", sessionId: "sess-1" })!;
+}
+
+function setup(store?: ReturnType<typeof openStore>) {
+  const f = fakes();
+  if (store) f.deps.store = store;
+  f.deps.store.data.jobs[ID] = doneJob();
+  return f;
+}
+
+const done = (id: string, outcome = "succeeded"): InboxMessage => ({ id, type: "worker_done", body: "listo", payload: JSON.stringify({ dispatchId: "d3", outcome }) });
+
+async function workerWrites(text: string): Promise<void> {
+  await mkdir(dirname(relayPath(ID)), { recursive: true });
+  await writeFile(relayPath(ID), text);
+}
+
+const ASK = `await: <@U0SALVA01>\n\n<@U0SALVA01> en el PR #486 guardé los permisos en \`agents\` porque:\n- **src/perms.ts:12** los lee con el agente\n\n¿Te parece bien?`;
+
+async function askedSalva(f: ReturnType<typeof setup>) {
+  await handleDm(f.deps, { user: "U1", text: `<${LINK}> preguntale a @salva por qué guardó los permisos en la tabla de agentes` });
+  await workerWrites(ASK);
+  await processBatch(f.deps, [done("w-ask")]);
+}
+
+test("an owner's DM resumes the thread's session with the instruction and the named people's tokens, posting nothing in the thread", async () => {
+  const f = setup();
+
+  await handleDm(f.deps, { user: "U1", text: `<${LINK}|hilo> preguntale a @salva por qué guardó los permisos en la tabla de agentes` });
+
+  assert.deepEqual(f.calls, RESUME);
+  assert.match(f.specs[0], /PRIVATE INSTRUCTION[\s\S]*preguntale a @salva por qué guardó los permisos en la tabla de agentes/);
+  assert.match(f.specs[0], /Salva: `<@U0SALVA01>`/);
+  assert.match(f.specs[0], new RegExp(relayPath(ID).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(f.specs[0], /gh pr create/);
+  assert.deepEqual([f.posts, f.reactions], [[], []], "the thread sees nothing");
+  assert.deepEqual(f.dms.map((d) => [d.user, d.text]), [["U1", `👌 voy con eso en ${THREAD_LINK}`]]);
+  assert.equal(f.store.data.jobs[ID].state.kind, "relaying");
+});
+
+test("a teammate's or a stranger's DM gets nothing at all", async () => {
+  const f = setup();
+
+  await handleDm(f.deps, { user: "T1", text: `${LINK} avisale a @sebas` });
+  await handleDm(f.deps, { user: "U9", text: `${LINK} avisale a @sebas` });
+
+  assert.deepEqual([f.dms, f.posts, f.calls], [[], [], []]);
+  assert.equal(f.store.data.jobs[ID].state.kind, "done");
+});
+
+test("an owner's DM without a link, for an unknown thread, or for a busy one gets the matching DM and runs nothing", async () => {
+  const f = setup();
+  f.deps.store.data.jobs["CRELAY:1791548003.000001"] = { ...doneJob(), id: "CRELAY:1791548003.000001", state: { kind: "working" }, dispatchId: "d9" };
+
+  await handleDm(f.deps, { user: "U1", text: "preguntale a @salva" });
+  await handleDm(f.deps, { user: "U1", text: "https://acme.slack.com/archives/COTHER/p1791548002024869 preguntale a @salva" });
+  await handleDm(f.deps, { user: "U1", text: "https://acme.slack.com/archives/CRELAY/p1791548003000001 preguntale a @salva" });
+
+  assert.match(f.dms[0].text, /^Pegá el link de un mensaje del hilo y qué querés que haga/);
+  assert.equal(f.dms[1].text, "no tengo un trabajo en ese hilo");
+  assert.equal(f.dms[2].text, "ese hilo está trabajando ahora; mandámelo cuando termine");
+  assert.deepEqual([f.posts, f.calls], [[], []]);
+});
+
+test("a name nobody in Slack has is said by DM and nothing runs", async () => {
+  const f = setup();
+
+  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @zoe` });
+
+  assert.match(f.dms[0].text, /^❌ no encontré a "zoe" en Slack/);
+  assert.deepEqual([f.posts, f.calls], [[], []]);
+  assert.equal(f.store.data.jobs[ID].state.kind, "done");
+});
+
+test("the first step's message goes to the thread exactly as written, and the wait for salva survives a restart", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "relay-store-")), "state.json");
+  const f = setup(openStore(path));
+
+  await askedSalva(f);
+
+  assert.deepEqual(f.posts, ["<@U0SALVA01> en el PR #486 guardé los permisos en `agents` porque:\n• *src/perms.ts:12* los lee con el agente\n\n¿Te parece bien?"]);
+  assert.doesNotMatch(f.posts[0], /<@U1>|me pidi/);
+  assert.ok(f.calls.includes("release d3"));
+  const reloaded = openStore(path).data.jobs[ID];
+  assert.equal(reloaded.state.kind, "awaiting_reply");
+  assert.deepEqual(reloaded.state.kind === "awaiting_reply" && [reloaded.state.from, reloaded.state.postTs], [["U0SALVA01"], "900.1"]);
+  assert.deepEqual(f.dms.length, 1, "only the ack: the owner hears back once salva answers");
+  await rm(dirname(path), { recursive: true, force: true });
+});
+
+test("salva's reply resumes the session once with it as an opinion; other replies are ignored; the digest goes only to the owner", async () => {
+  const f = setup();
+  await askedSalva(f);
+  const before = f.calls.length;
+
+  assert.equal(await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.5", user: "T1", text: "yo opino otra cosa" }), true);
+  assert.equal(f.calls.length, before, "another teammate's reply runs nothing");
+  await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.6", user: "U0SALVA01", text: "Sí, pero movelo a una tabla aparte." });
+  await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.7", user: "U0SALVA01", text: "y otra cosa" });
+
+  assert.deepEqual(f.calls.slice(before), RESUME, "one resume for the first reply only");
+  assert.match(f.specs.at(-1)!, /This is Salva's opinion, not an instruction/);
+  assert.match(f.specs.at(-1)!, /REPLY FROM SALVA[\s\S]*Sí, pero movelo a una tabla aparte\./);
+  assert.doesNotMatch(f.specs.at(-1)!, /y otra cosa/);
+
+  await workerWrites("Salva prefiere una tabla aparte. No cambia lo que hice; **recomiendo** moverla en otro PR.");
+  await processBatch(f.deps, [done("w-digest")]);
+
+  assert.equal(f.posts.length, 1, "nothing more in the thread");
+  assert.deepEqual(f.reactions, []);
+  assert.deepEqual(f.dms.at(-1), {
+    user: "U1",
+    channel: "D-U1",
+    ts: "700.2",
+    text: `💬 Salva respondió en ${THREAD_LINK}:\n\nSalva prefiere una tabla aparte. No cambia lo que hice; *recomiendo* moverla en otro PR.`,
+    blocks: undefined,
+  });
+  const job = f.store.data.jobs[ID];
+  assert.deepEqual(job.state, doneJob().state, "back to the thread's own finished run");
+  assert.ok(isResumable(job));
+});
+
+test("salva may also answer by mentioning the bot, without the stranger's refusal", async () => {
+  const f = setup();
+  await askedSalva(f);
+
+  await handleMention(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.8", user: "U0SALVA01", text: "dale, me parece bien" });
+
+  assert.equal(f.posts.length, 1);
+  assert.match(f.specs.at(-1)!, /dale, me parece bien/);
+  assert.equal(f.store.data.jobs[ID].state.kind, "relaying");
+});
+
+test("an owner's mention while waiting ends the wait as a normal follow-up", async () => {
+  const f = setup();
+  await askedSalva(f);
+
+  await handleMention(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.9", user: "U1", text: "!investiga otra cosa", command: "investiga" });
+
+  const job = f.store.data.jobs[ID];
+  assert.equal(job.state.kind, "working");
+  assert.equal(job.mode, "investigate");
+  assert.match(f.specs.at(-1)!, /Investigation playbook/);
+  await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "901.1", user: "U0SALVA01", text: "tarde" });
+  assert.doesNotMatch(f.specs.at(-1)!, /tarde/);
+});
+
+test("a plain notice is posted and the owner gets its link", async () => {
+  const f = setup();
+  await handleDm(f.deps, { user: "U1", text: `${LINK} avisale a @sebas que el PR está listo` });
+  await workerWrites("await: none\n\n<@U0SEBAS01> el PR #486 está listo para revisar.");
+
+  await processBatch(f.deps, [done("w-notice")]);
+
+  assert.deepEqual(f.posts, ["<@U0SEBAS01> el PR #486 está listo para revisar."]);
+  assert.equal(f.dms.at(-1)!.text, `✅ listo: https://slack.test/${CHANNEL}/900.1`);
+  assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state);
+});
+
+test("a day without salva's reply is DMed and the job rests again", async () => {
+  const f = setup();
+  await askedSalva(f);
+
+  await expireRelays(f.deps, f.clock.now + RELAY_REPLY_TTL_MS - 1);
+  assert.equal(f.store.data.jobs[ID].state.kind, "awaiting_reply");
+  await expireRelays(f.deps, f.clock.now + RELAY_REPLY_TTL_MS);
+  await expireRelays(f.deps, f.clock.now + RELAY_REPLY_TTL_MS + 1);
+
+  assert.deepEqual(f.dms.slice(1).map((d) => d.text), [`⌛ Salva no respondió en ${THREAD_LINK}`]);
+  assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state);
+  assert.equal(f.posts.length, 1);
+});
+
+test("a failed relay, a malformed file or a session that will not resume is DMed, never posted", async () => {
+  for (const [label, act] of [
+    ["failed outcome", async (f: ReturnType<typeof setup>) => processBatch(f.deps, [done("w-fail", "failed")])],
+    ["malformed file", async (f: ReturnType<typeof setup>) => (await workerWrites("<@U0SALVA01> hola sin encabezado"), processBatch(f.deps, [done("w-bad")]))],
+  ] as const) {
+    const f = setup();
+    await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @salva` });
+    await act(f);
+    assert.deepEqual(f.posts, [], label);
+    assert.match(f.dms.at(-1)!.text, /^❌ no pude escribir en /, label);
+    assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state, label);
+  }
+
+  const f = fakes({ async waitTuiIdle() { return false; } });
+  f.deps.store.data.jobs[ID] = doneJob();
+  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @salva` });
+  assert.deepEqual(f.posts, []);
+  assert.ok(!f.calls.some((c) => c.startsWith("followup")), "no fresh worker without the session's context");
+  assert.match(f.dms.at(-1)!.text, /^❌ no pude retomar la sesión de .*no escribí nada en el hilo\.$/);
+  assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state);
+});
+
+test("a relay's statuses never reach the thread and its questions are answered without a human", async () => {
+  const f = setup();
+  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @salva` });
+
+  await processBatch(f.deps, [
+    { id: "s1", type: "status", body: "leyendo el PR", payload: JSON.stringify({ dispatchId: "d3" }) },
+    { id: "q1", type: "question", body: "¿A quién?", payload: JSON.stringify({ dispatchId: "d3", question: "¿A quién?" }) },
+  ]);
+
+  assert.deepEqual(f.posts, []);
+  assert.ok(f.calls.some((c) => c.startsWith("reply q1 No human can answer")));
+  assert.equal(f.store.data.jobs[ID].state.kind, "relaying");
+});

@@ -9,17 +9,20 @@ import type { CommandName } from "./commands.ts";
 import { mkdir } from "node:fs/promises";
 import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
 import type { LocalFile } from "./files.ts";
-import { PLAN_OPTIONS, isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
-import type { Job, JobEvent, Mode, RepoRef } from "./jobs.ts";
+import { PLAN_OPTIONS, awaitsReply, dueRelayExpiries, isActive, isOtherTask, isResumable, jobId, jobLabel, lastRun, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
+import type { Job, JobEvent, Mode, Person, RepoRef } from "./jobs.ts";
 import { worktreePath, worktreeSelector } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import { pullTarget } from "./parse.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
-import { clearReports, planPath, reportPath, slackPost } from "./report.ts";
+import { instructionOf, mentionedUsers, parseThreadLink } from "./relay.ts";
+import { clearReports, planPath, relayPath, reportPath, slackPost } from "./report.ts";
 import { BUTTON_LABELS, decideRoute, routeHint, routeState } from "./route.ts";
 import type { Decision as RouteDecision, RouteAnswer, RouteState } from "./route.ts";
-import { buildSpec, taskTitle } from "./spec.ts";
+import { buildRelaySpec, buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
+import { matchUser, userLabel } from "./thread.ts";
+import type { SlackUser } from "./thread.ts";
 
 /** The only Slack surface the core needs; Bolt and the console harness both implement it. */
 export type Poster = {
@@ -61,6 +64,8 @@ export type BotDeps = {
   fetchFile(url: string): Promise<Response>;
   /** Jev's reading of a plain mention; absent without a TypeSafe key, and then a plain mention is a change. */
   classify?(state: RouteState): Promise<RouteAnswer>;
+  /** The workspace's people, to resolve who an owner's private instruction names. */
+  users(): Promise<SlackUser[]>;
 };
 
 export type Mention = {
@@ -81,6 +86,9 @@ export type Mention = {
 };
 
 export type ThreadReply = { channel: string; threadTs: string; ts: string; user: string; text: string; files?: readonly unknown[] };
+
+/** A direct message to the bot. */
+export type DirectMessage = { user: string; text: string };
 
 /** Owners run work and approve; teammates' work waits for an owner; anyone else is refused. */
 export type Access = "owner" | "teammate" | "stranger";
@@ -110,7 +118,7 @@ export function startsSettled(): Promise<unknown> {
   return Promise.allSettled([...inflightStarts]);
 }
 
-function commit(deps: BotDeps, job: Job, ev: JobEvent): Job | undefined {
+function commit(deps: Pick<BotDeps, "store">, job: Job, ev: JobEvent): Job | undefined {
   const current = deps.store.data.jobs[job.id] ?? job;
   const next = transition(current, ev);
   if (!next) return undefined;
@@ -150,9 +158,11 @@ async function bringFiles(deps: BotDeps, where: Pick<Job, "slack">, raw: readonl
 
 export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
   const access = accessOf(deps, m.user);
-  if (access === "stranger") return deps.poster.postToThread(threadOf(m), refusal(m.user));
   const id = jobId(m.channel, m.threadTs);
   const existing = deps.store.data.jobs[id];
+  // Whoever the relay asked may answer by mentioning the bot; an owner's mention is a follow-up that ends the wait.
+  if (existing && !m.command && access !== "owner" && awaitsReply(existing, m.user, m.ts, false)) return relayReply(deps, existing, m);
+  if (access === "stranger") return deps.poster.postToThread(threadOf(m), refusal(m.user));
   switch (m.command) {
     case "aparte":
       return;
@@ -472,7 +482,8 @@ const CANCELLED_SUMMARY = "The user cancelled the previous worker before it fini
 
 async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode, note?: string): Promise<void> {
   if (!isResumable(job) || !job.worktreeId) return;
-  const previous = job.state.kind === "done" ? job.state : { summary: CANCELLED_SUMMARY, prUrl: undefined };
+  const run = lastRun(job);
+  const previous = run?.kind === "done" ? run : { summary: CANCELLED_SUMMARY, prUrl: undefined };
   const worktree = worktreeSelector(job.worktreeId);
   const next = commit(deps, job, { kind: "follow_up", request: m.text, mode, requester: m.user });
   if (!next) return;
@@ -624,10 +635,14 @@ async function cancel(deps: BotDeps, m: Pick<Mention, "channel" | "threadTs" | "
   );
 }
 
-function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
-  const p = launchOnce(deps, job, start).finally(() => inflightStarts.delete(p));
+function tracked(start: Promise<void>): Promise<void> {
+  const p = start.finally(() => inflightStarts.delete(p));
   inflightStarts.add(p);
   return p;
+}
+
+function launch(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
+  return tracked(launchOnce(deps, job, start));
 }
 
 async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca["startWorker"]>): Promise<void> {
@@ -696,6 +711,10 @@ async function handleThreadInput(
 export async function handleThreadReply(deps: BotDeps, r: ThreadReply): Promise<boolean> {
   if (parseCommand(r.text)?.name === "aparte") return true;
   const job = deps.store.data.jobs[jobId(r.channel, r.threadTs)];
+  if (job?.state.kind === "awaiting_reply") {
+    if (awaitsReply(job, r.user, r.ts, accessOf(deps, r.user) === "owner")) await relayReply(deps, job, r);
+    return true;
+  }
   if (!job || !isActive(job)) return false;
   if (mayDrive(deps, job, r.user)) await handleThreadInput(deps, job, r);
   return true;
@@ -776,5 +795,102 @@ function teammateMayClick(deps: BotDeps, click: Exclude<Click, { kind: "approval
       return deps.store.data.pendingRoutes[click.jobId]?.mention.user === user;
     case "repo":
       return false;
+  }
+}
+
+const RELAY_USAGE = "Pegá el link de un mensaje del hilo y qué querés que haga, por ejemplo: `<link> preguntale a @salva por qué guardó los permisos en esa tabla`.";
+
+/**
+ * An owner's private instruction for a thread's session. Nothing reaches the thread but the message the worker writes,
+ * so nobody there learns the owner asked for it; every answer and failure goes back by DM.
+ */
+export async function handleDm(deps: BotDeps, dm: DirectMessage): Promise<void> {
+  if (accessOf(deps, dm.user) !== "owner") return;
+  const tell = async (text: string) => {
+    await deps.poster.dm(dm.user, text).catch((err) => console.error(`DM to ${dm.user} failed:`, err));
+  };
+  const link = parseThreadLink(dm.text);
+  const instruction = link && instructionOf(dm.text, link);
+  if (!link || !instruction) return tell(RELAY_USAGE);
+  const id = jobId(link.channel, link.threadTs);
+  await starting.get(id);
+  const job = deps.store.data.jobs[id];
+  if (!job) return tell("no tengo un trabajo en ese hilo");
+  if (isActive(job)) return tell("ese hilo está trabajando ahora; mandámelo cuando termine");
+  if (!isResumable(job) || !job.sessionId) return tell("no tengo una sesión que pueda retomar en ese hilo");
+  let people: Person[];
+  try {
+    people = await namedPeople(deps, instruction);
+  } catch (err) {
+    return tell(`❌ ${errorText(err)}`);
+  }
+  const thread = await deps.poster.permalink(link.channel, link.threadTs).catch(() => link.url);
+  const next = commit(deps, job, { kind: "relay", relay: { owner: dm.user, instruction, people, link: thread } });
+  if (!next) return;
+  await tell(`👌 voy con eso en ${thread}`);
+  await launchRelay(deps, next);
+}
+
+async function namedPeople(deps: BotDeps, instruction: string): Promise<Person[]> {
+  const queries = mentionedUsers(instruction);
+  if (!queries.length) return [];
+  const users = await deps.users();
+  return queries.map((q) => {
+    const user = matchUser(users, q);
+    return { id: user.id, name: userLabel(user) };
+  });
+}
+
+/** Resumes the thread's own session for the relay's current step; a session that will not resume is the owner's to hear about, never the thread's. */
+function launchRelay(deps: BotDeps, job: Job): Promise<void> {
+  return tracked(launchRelayOnce(deps, job));
+}
+
+async function launchRelayOnce(deps: BotDeps, job: Job): Promise<void> {
+  if (job.state.kind !== "relaying" || !job.worktreeId || !job.sessionId) return;
+  const { relay, step } = job.state;
+  try {
+    await clearReports(job.id);
+    const spec = buildRelaySpec({ job, relay, step, relayPath: relayPath(job.id) });
+    const w = await resumeSession(deps, { worktree: worktreeSelector(job.worktreeId), sessionId: job.sessionId, title: `${taskTitle(job)} (relay)`, spec });
+    console.log(`relay ${job.id} (${step.kind}): resumed Claude session ${job.sessionId}`);
+    commit(deps, job, { kind: "started", worktreeId: job.worktreeId, taskId: w.taskId, dispatchId: w.dispatchId });
+  } catch (err) {
+    console.error(`relay ${job.id}: resuming session ${job.sessionId} failed:`, err);
+    commit(deps, job, { kind: "relay_ended" });
+    await deps.poster
+      .dm(relay.owner, `❌ no pude retomar la sesión de ${relay.link} (${errorText(err)}), así que no escribí nada en el hilo.`)
+      .catch((dmErr) => console.error(`DM to ${relay.owner} failed:`, dmErr));
+  }
+}
+
+/** Only the first qualifying reply runs: `commit` applies to the stored job, which a first reply has already moved past awaiting_reply. */
+async function relayReply(deps: BotDeps, job: Job, r: { user: string; text: string }): Promise<void> {
+  if (job.state.kind !== "awaiting_reply") return;
+  const from = job.state.relay.people.find((p) => p.id === r.user) ?? { id: r.user, name: await nameOf(deps, r.user) };
+  const next = commit(deps, job, { kind: "relay_reply", from, text: r.text });
+  if (next) await launchRelay(deps, next);
+}
+
+async function nameOf(deps: BotDeps, id: string): Promise<string> {
+  const user = (await deps.users().catch(() => [])).find((u) => u.id === id);
+  return user ? userLabel(user) : id;
+}
+
+function namesOf(job: Job): string {
+  if (job.state.kind !== "awaiting_reply") return "";
+  const { from, relay } = job.state;
+  const names = from.map((id) => relay.people.find((p) => p.id === id)?.name ?? id);
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} y ${names.at(-1)} no respondieron` : `${names[0]} no respondió`;
+}
+
+/** Relays that waited a day for their reply go back to rest; their owner hears it by DM. Safe to call on every tick. */
+export async function expireRelays(deps: Pick<BotDeps, "poster" | "store" | "now">, now = (deps.now ?? Date.now)()): Promise<void> {
+  for (const job of dueRelayExpiries(deps.store.data, now)) {
+    if (job.state.kind !== "awaiting_reply") continue;
+    const { owner, link } = job.state.relay;
+    const text = `⌛ ${namesOf(job)} en ${link}`;
+    if (!commit(deps, job, { kind: "reply_expired" })) continue;
+    await deps.poster.dm(owner, text).catch((err) => console.error(`DM to ${owner} failed:`, err));
   }
 }

@@ -134,6 +134,13 @@ export function fakes(over: Partial<Orca> = {}) {
       const served = slackFiles[url];
       return typeof served === "function" ? served() : (served ?? new Response("not found", { status: 404 }));
     },
+    async users() {
+      return [
+        { id: "U1", name: "facu", displayName: "Facu", realName: "Facundo", isBot: false, deleted: false },
+        { id: "U0SALVA01", name: "salva", displayName: "Salva", realName: "Salvador", isBot: false, deleted: false },
+        { id: "U0SEBAS01", name: "sebas", displayName: "Sebas", realName: "Sebastián", isBot: false, deleted: false },
+      ];
+    },
     async ask(o) {
       calls.push(`ask ${o.repoPath} ${o.question}${o.files?.length ? ` files=${o.files.map((f) => f.path).join(",")}` : ""}`);
       return "## Respuesta\nSe valida en **src/webhook.ts:12**.";

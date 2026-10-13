@@ -3,6 +3,8 @@ import { MESSAGE_MAX, doneMessage, planMessage, questionMessage } from "./blocks
 import type { Block, Message } from "./blocks.ts";
 import type { Approval } from "./approvals.ts";
 import type { Mention } from "./bot.ts";
+import { parseRelayMessage } from "./relay.ts";
+import { slackPost } from "./report.ts";
 
 export type JobState =
   | { kind: "starting" }
@@ -15,9 +17,25 @@ export type JobState =
       /** The Slack message holding the option buttons, retired once the question is answered. */
       postTs?: string;
     }
-  | { kind: "done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string }
-  | { kind: "cancelled" }
-  | { kind: "failed"; error: string };
+  | Settled
+  | { kind: "failed"; error: string }
+  /** The worker carries out an owner's private instruction; nothing but its own message reaches the thread. */
+  | { kind: "relaying"; relay: Relay; step: RelayStep }
+  /** The relay's message is in the thread and waits for the first reply from `from`, then the worker digests it. */
+  | { kind: "awaiting_reply"; relay: Relay; from: string[]; postTs: string; since: number };
+
+/** Where a job rests between runs: what the next follow-up continues from. */
+export type Settled = { kind: "done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string } | { kind: "cancelled" };
+
+export type Person = { id: string; name: string };
+
+/** An owner's private instruction for a thread, and the state the job returns to once it is carried out. */
+export type Relay = { owner: string; instruction: string; people: Person[]; link: string; after: Settled };
+
+/** First the worker writes the thread message; then, if a reply came, a private digest of it for the owner. */
+export type RelayStep = { kind: "write" } | { kind: "digest"; from: Person; reply: string };
+
+export const RELAY_REPLY_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** How the repo was found: a GitHub link or `owner/repo#n`, an exact known repo name, the channel's `!repo` default, or Claude's guess from the thread. */
 export type RepoSource = "link" | "name" | "channel" | "inferred";
@@ -79,7 +97,12 @@ export type JobEvent =
   | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
   | { kind: "cancelled"; sessionId?: string }
   | { kind: "follow_up"; request: string; mode: Mode; requester: string }
-  | { kind: "superseded"; reason: string };
+  | { kind: "superseded"; reason: string }
+  | { kind: "relay"; relay: Omit<Relay, "after"> }
+  | { kind: "relay_posted"; ts: string; at: number; awaiting: string[] }
+  | { kind: "relay_reply"; from: Person; text: string }
+  | { kind: "relay_ended"; sessionId?: string }
+  | { kind: "reply_expired" };
 
 export function jobId(channel: string, threadTs: string): string {
   return `${channel}:${threadTs}`;
@@ -108,19 +131,30 @@ export function isOtherTask(job: Pick<Job, "repo" | "issue">, t: { owner: string
 
 export function isActive(job: Job): boolean {
   const k = job.state.kind;
-  return k === "starting" || k === "working" || k === "awaiting_answer";
+  return k === "starting" || k === "working" || k === "awaiting_answer" || k === "relaying";
 }
 
-/** A finished or cancelled job whose worktree a later mention continues. */
-export function isResumable(job: Job): boolean {
-  return (job.state.kind === "done" || job.state.kind === "cancelled") && job.worktreeId !== undefined;
+/** The thread's last finished or cancelled run, which an owner's relay leaves as it was. */
+export function lastRun(job: Job): Settled | undefined {
+  const s = job.state;
+  if (s.kind === "done" || s.kind === "cancelled") return s;
+  return s.kind === "relaying" || s.kind === "awaiting_reply" ? s.relay.after : undefined;
 }
+
+/** A finished or cancelled job whose worktree a later mention continues, also while a relay waits for its reply. */
+export function isResumable(job: Job): boolean {
+  return !isActive(job) && lastRun(job) !== undefined && job.worktreeId !== undefined;
+}
+
+/** A new run on the same worktree starts with no dispatch, progress or start message of the last one. */
+const fresh = { taskId: undefined, dispatchId: undefined, progress: undefined, startMsg: undefined };
 
 /** Returns undefined when the event does not apply to the job's current state. */
 export function transition(job: Job, ev: JobEvent): Job | undefined {
   const from = job.state.kind;
   switch (ev.kind) {
     case "started":
+      if (from === "relaying" && !job.dispatchId) return { ...job, taskId: ev.taskId, dispatchId: ev.dispatchId };
       if (from !== "starting") return undefined;
       return {
         ...job,
@@ -142,7 +176,7 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       if (from !== "awaiting_answer") return undefined;
       return { ...job, state: { kind: "working" } };
     case "worker_done":
-      if (!isActive(job)) return undefined;
+      if (!isActive(job) || from === "relaying") return undefined;
       return {
         ...job,
         sessionId: ev.sessionId ?? job.sessionId,
@@ -150,25 +184,55 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       };
     case "cancelled":
       if (!isActive(job)) return undefined;
+      // A stopped relay leaves the thread's own work as it was.
+      if (job.state.kind === "relaying") return { ...job, sessionId: ev.sessionId ?? job.sessionId, state: job.state.relay.after };
       return { ...job, sessionId: ev.sessionId ?? job.sessionId, state: { kind: "cancelled" } };
     case "follow_up":
-      if (from !== "done" && from !== "cancelled") return undefined;
+      if (isActive(job) || !lastRun(job)) return undefined;
       return {
         ...job,
+        ...fresh,
         slack: { ...job.slack, requester: ev.requester },
         request: ev.request,
         mode: ev.mode,
         planHash: undefined,
-        taskId: undefined,
-        dispatchId: undefined,
-        progress: undefined,
-        startMsg: undefined,
         state: { kind: "starting" },
       };
     case "superseded":
       if (!isActive(job)) return undefined;
       return { ...job, state: { kind: "failed", error: ev.reason } };
+    case "relay": {
+      const after = lastRun(job);
+      if (isActive(job) || !after) return undefined;
+      return { ...job, ...fresh, state: { kind: "relaying", relay: { ...ev.relay, after }, step: { kind: "write" } } };
+    }
+    case "relay_posted": {
+      const s = job.state;
+      if (s.kind !== "relaying" || s.step.kind !== "write") return undefined;
+      if (!ev.awaiting.length) return { ...job, ...fresh, state: s.relay.after };
+      return { ...job, ...fresh, state: { kind: "awaiting_reply", relay: s.relay, from: ev.awaiting, postTs: ev.ts, since: ev.at } };
+    }
+    case "relay_reply":
+      if (job.state.kind !== "awaiting_reply") return undefined;
+      return { ...job, ...fresh, state: { kind: "relaying", relay: job.state.relay, step: { kind: "digest", from: ev.from, reply: ev.text } } };
+    case "relay_ended":
+      if (job.state.kind !== "relaying") return undefined;
+      return { ...job, ...fresh, sessionId: ev.sessionId ?? job.sessionId, state: job.state.relay.after };
+    case "reply_expired":
+      if (job.state.kind !== "awaiting_reply") return undefined;
+      return { ...job, ...fresh, state: job.state.relay.after };
   }
+}
+
+/** Relays whose message has waited a day for its reply. */
+export function dueRelayExpiries(store: Store, now: number): Job[] {
+  return Object.values(store.jobs).filter((j) => j.state.kind === "awaiting_reply" && now - j.state.since >= RELAY_REPLY_TTL_MS);
+}
+
+/** Whether `user`'s reply at `ts` is the one an awaiting relay waits for; owners may answer in their stead. */
+export function awaitsReply(job: Job, user: string, ts: string, isOwner: boolean): boolean {
+  const s = job.state;
+  return s.kind === "awaiting_reply" && (s.from.includes(user) || isOwner) && Number(ts) > Number(s.postTs);
 }
 
 export type InboxMessage = { id: string; type: string; subject?: string; body?: string; payload?: unknown };
@@ -202,11 +266,23 @@ function summaryOf(msg: InboxMessage): string {
   return body.length > MESSAGE_MAX ? `${body.slice(0, MESSAGE_MAX)}…` : body;
 }
 
-/** `lead` is posted before `post`, as its own message. */
-export type InboxOutcome = { job: Job; lead?: Message; post?: string; blocks?: Block[]; release?: string };
+/**
+ * `lead` is posted before `post`, as its own message. `dm` goes privately to an owner.
+ * `relayPosted` asks the caller to record the posted relay message's ts; `answer` replies to a worker's question.
+ */
+export type InboxOutcome = {
+  job: Job;
+  lead?: Message;
+  post?: string;
+  blocks?: Block[];
+  release?: string;
+  dm?: { user: string; text: string };
+  relayPosted?: { awaiting: string[] };
+  answer?: { msgId: string; text: string };
+};
 
 /** What the caller read from disk or GitHub: the plan for a plan-mode question, the rest for a worker_done. */
-export type Extras = { prUrlFallback?: string; report?: string; sessionId?: string; plan?: string };
+export type Extras = { prUrlFallback?: string; report?: string; sessionId?: string; plan?: string; relayFile?: string };
 
 function hash(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -251,6 +327,7 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: Extra
   const payload = parsePayload(msg);
   const job = findJobByDispatch(store, payload.dispatchId);
   if (!job) return undefined;
+  if (job.state.kind === "relaying") return relayOutcome(job, job.state, msg, payload, extras);
   const who = `<@${job.slack.requester}>`;
 
   switch (msg.type) {
@@ -283,6 +360,42 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: Extra
       if (!next) return undefined;
       const { text, blocks } = doneMessageFor(job, outcome, summary, prUrl);
       return { job: next, post: text, blocks, release: payload.dispatchId };
+    }
+    default:
+      return undefined;
+  }
+}
+
+const NO_HUMAN = "No human can answer during this step. Decide on your own, and carry on.";
+
+/** A relay run speaks only through its file: its statuses are dropped, its questions answered here, its failures DMed. */
+function relayOutcome(
+  job: Job,
+  state: Extract<JobState, { kind: "relaying" }>,
+  msg: InboxMessage,
+  payload: Payload,
+  extras: Extras,
+): InboxOutcome | undefined {
+  const { relay, step } = state;
+  const where = `en ${relay.link}`;
+  const ended = (sessionId?: string) => transition(job, { kind: "relay_ended", sessionId })!;
+  switch (msg.type) {
+    case "question":
+      return { job, answer: { msgId: msg.id, text: NO_HUMAN } };
+    case "escalation":
+      return { job, dm: { user: relay.owner, text: `⚠️ el worker escaló ${where}: ${msg.subject ?? ""}\n${msg.body ?? ""}`.trim() } };
+    case "worker_done": {
+      const release = payload.dispatchId;
+      const sessionId = extras.sessionId;
+      const fail = (why: string) => ({ job: ended(sessionId), release, dm: { user: relay.owner, text: `❌ no pude ${step.kind === "write" ? "escribir" : "resumir la respuesta"} ${where}: ${why}` } });
+      if (payload.outcome !== "succeeded") return fail(summaryOf(msg) || "el worker terminó sin éxito.");
+      if (!extras.relayFile) return fail("el worker no dejó el archivo con el mensaje.");
+      if (step.kind === "digest") {
+        return { job: ended(sessionId), release, dm: { user: relay.owner, text: `💬 ${step.from.name} respondió ${where}:\n\n${slackPost(extras.relayFile)}` } };
+      }
+      const parsed = parseRelayMessage(extras.relayFile, { people: relay.people.map((p) => p.id), owner: relay.owner });
+      if ("error" in parsed) return fail(parsed.error);
+      return { job: { ...job, sessionId: sessionId ?? job.sessionId }, post: slackPost(parsed.text), release, relayPosted: { awaiting: parsed.awaiting } };
     }
     default:
       return undefined;
