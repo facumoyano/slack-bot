@@ -756,7 +756,7 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
         handled = true;
         delete deps.store.data.pendingRoutes[click.jobId];
         deps.store.save();
-        const chosen = plainMessage(`${ROUTE_QUESTION}\n✅ <@${input.user}> eligió: ${BUTTON_LABELS[click.route]}`);
+        const chosen = plainMessage(`${ROUTE_QUESTION}\n✅ elegido: ${BUTTON_LABELS[click.route]}`);
         await deps.poster.update(input.channel, input.messageTs, chosen.text, chosen.blocks).catch((err) => console.error(`retiring route buttons in ${click.jobId} failed:`, err));
         await perform(deps, input.user, pending.mention, click.route);
       }
