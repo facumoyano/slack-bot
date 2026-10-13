@@ -1,5 +1,7 @@
 import type { types } from "@slack/bolt";
 import type { RepoRef } from "./jobs.ts";
+import { ASKABLE, BUTTON_LABELS } from "./route.ts";
+import type { AskableRoute } from "./route.ts";
 
 export type Block = types.KnownBlock;
 
@@ -14,6 +16,8 @@ export const ACTIONS = {
   answer: `${ACTION_PREFIX}answer`,
   stop: `${ACTION_PREFIX}stop`,
   repo: `${ACTION_PREFIX}repo`,
+  /** One per route, suffixed with the route's name. */
+  route: `${ACTION_PREFIX}route`,
   /** A URL button: Slack opens the link itself but still sends the click, which must be acked. */
   pr: `${ACTION_PREFIX}pr`,
 } as const;
@@ -23,7 +27,8 @@ export const MAX_OPTION_BUTTONS = 5;
 export type Click =
   | { kind: "answer"; jobId: string; questionMsgId: string; option: number }
   | { kind: "stop"; jobId: string }
-  | { kind: "repo"; jobId: string; repo: RepoRef };
+  | { kind: "repo"; jobId: string; repo: RepoRef }
+  | { kind: "route"; jobId: string; route: AskableRoute };
 
 const SECTION_MAX = 3000;
 const LABEL_MAX = 75;
@@ -101,6 +106,27 @@ export function startMessage(o: { jobId: string; text: string; current: RepoRef;
   return { text: o.text, blocks: [...textBlocks(o.text), { type: "actions", elements: choices.length ? [stop, select] : [stop] }] };
 }
 
+export const ROUTE_QUESTION = "¿Qué querés que haga?";
+
+/** Asked when a plain mention's route is unclear; each button runs that route on the original mention. */
+export function routeAskMessage(jobId: string): Message {
+  return {
+    text: ROUTE_QUESTION,
+    blocks: [
+      ...textBlocks(ROUTE_QUESTION),
+      {
+        type: "actions",
+        elements: ASKABLE.map((route) => ({
+          type: "button" as const,
+          action_id: `${ACTIONS.route}_${route}`,
+          text: { type: "plain_text" as const, text: BUTTON_LABELS[route] },
+          value: jobId,
+        })),
+      },
+    ],
+  };
+}
+
 /** The same text with its buttons gone. */
 export function plainMessage(text: string): Message {
   return { text, blocks: textBlocks(text) };
@@ -147,6 +173,10 @@ export function parseClick(actionId: string, value: string | undefined): Click |
     const repo = typeof v?.r === "string" ? REPO.exec(v.r) : null;
     if (typeof v?.j !== "string" || !JOB_ID.test(v.j) || !repo) return undefined;
     return { kind: "repo", jobId: v.j, repo: { owner: repo[1], name: repo[2] } };
+  }
+  if (actionId.startsWith(`${ACTIONS.route}_`)) {
+    const route = ASKABLE.find((r) => actionId === `${ACTIONS.route}_${r}`);
+    return route && JOB_ID.test(value) ? { kind: "route", jobId: value, route } : undefined;
   }
   const index = actionId.startsWith(`${ACTIONS.answer}_`) ? Number(actionId.slice(ACTIONS.answer.length + 1)) : NaN;
   if (Number.isInteger(index)) {

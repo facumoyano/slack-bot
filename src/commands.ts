@@ -30,7 +30,7 @@ export type CommandName = (typeof COMMANDS)[number]["name"];
 
 export type Command = { name: CommandName; rest: string };
 
-/** The kind of worker run a mention starts; anything but a mode command is a change. */
+/** The kind of worker run a command starts; any other command, and a plain mention when it is not routed, is a change. */
 export function commandMode(name: CommandName | undefined): Mode {
   const found = COMMANDS.find((c) => c.name === name);
   return found && "mode" in found ? found.mode : "change";
@@ -53,7 +53,7 @@ export function parseCommand(text: string): Command | undefined {
 
 export function helpText(): string {
   const lines = COMMANDS.map((c) => `• \`${c.usage}\`${c.aliases.length > 1 ? ` (${c.aliases.slice(1).map((a) => `\`!${a}\``).join(", ")})` : ""}: ${c.help}`);
-  return ["Comandos, al principio de la mención:", ...lines, "Sin comando, te tomo el pedido como tarea en este hilo.", "Podés adjuntar imágenes o archivos al pedido o en el hilo; los que genere el worker los subo acá."].join("\n");
+  return ["Comandos, al principio de la mención:", ...lines, "Sin comando, entiendo qué pedís (un cambio, una pregunta, una investigación, una revisión o un plan); si no me queda claro, te pregunto con botones. Un comando siempre gana.", "Podés adjuntar imágenes o archivos al pedido o en el hilo; los que genere el worker los subo acá."].join("\n");
 }
 
 export type RepoArg = { kind: "show" } | { kind: "clear" } | { kind: "set"; repo: RepoRef } | { kind: "unknown"; text: string };

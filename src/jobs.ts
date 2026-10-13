@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { doneMessage, planMessage, questionMessage } from "./blocks.ts";
 import type { Block, Message } from "./blocks.ts";
+import type { Mention } from "./bot.ts";
 
 export type JobState =
   | { kind: "starting" }
@@ -62,6 +63,8 @@ export type Store = {
   processedMsgIds: string[];
   /** Each channel's `!repo` default. */
   channels: Record<string, RepoRef>;
+  /** Per thread, the mention whose route the bot asked the human to pick, and the message holding the buttons. */
+  pendingRoutes: Record<string, { ts: string; mention: Mention }>;
 };
 
 export type JobEvent =

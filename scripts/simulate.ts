@@ -14,6 +14,7 @@ import { FILES_ROOT } from "../src/files.ts";
 import { jobId } from "../src/jobs.ts";
 import { ensureRun, findRepo, knownGithubRepos, realOrca, repoIdForPath } from "../src/orca.ts";
 import { chooseTarget } from "../src/parse.ts";
+import { classifyWithJev } from "../src/route.ts";
 import { latestSession } from "../src/session.ts";
 import { openStore } from "../src/store.ts";
 
@@ -109,7 +110,17 @@ async function fetchFile(url: string): Promise<Response> {
   return new Response(await readFile(fileURLToPath(url)));
 }
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile };
+const typesafeKey = process.env.TYPESAFE_API_KEY?.trim();
+console.log(`[${ts()}] ruteo de menciones sin comando: ${typesafeKey ? "Jev" : "apagado (sin TYPESAFE_API_KEY), son cambios"}`);
+const classify = typesafeKey
+  ? async (state: Parameters<typeof classifyWithJev>[1]) => {
+      const answer = await classifyWithJev(typesafeKey, state);
+      console.log(`[${ts()}] [jev] ${answer.choice} @ ${answer.confidence.toFixed(2)} ${JSON.stringify(answer.probabilities)}`);
+      return answer;
+    }
+  : undefined;
+
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify };
 const channel = "SIM";
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
 const target =
@@ -128,6 +139,8 @@ if (command?.name === "pregunta" || command?.name === "repo") {
   console.log(`[${ts()}] jobs en el hilo: ${store.data.jobs[id] ? "1" : "0"}`);
   process.exit(0);
 }
+/** The latest click's work, so the run waits for a picked route to finish starting. */
+let clickWork: Promise<void> = Promise.resolve();
 const stdin = createInterface({ input: process.stdin });
 stdin.on("line", (line) => {
   const text = line.trim();
@@ -139,7 +152,7 @@ stdin.on("line", (line) => {
     const parsed = parseClick(action, value);
     if (!parsed || !messageTs) return console.log(`[${ts()}] (click desconocido: ${action} ${value})`);
     console.log(`[${ts()}] [usuario ${as} toca ${action} en ${messageTs}]`);
-    handleClick(deps, { click: parsed, user: as, channel, threadTs, messageTs }).catch((err) => console.error("click failed:", err));
+    clickWork = handleClick(deps, { click: parsed, user: as, channel, threadTs, messageTs }).catch((err) => console.error("click failed:", err));
     return;
   }
   console.log(`[${ts()}] [usuario USIM responde en hilo] ${text}`);
@@ -164,7 +177,16 @@ if (cancelAfter) {
   }, 500);
 }
 await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command?.name, target, files: attached });
-if (!store.data.jobs[id]) process.exit(1);
+if (!store.data.jobs[id] && store.data.pendingRoutes[id]) {
+  console.log(`[${ts()}] (esperando que elijas una opción: pegá una línea :click …)`);
+  while (store.data.pendingRoutes[id]) await new Promise((r) => setTimeout(r, 200));
+  await clickWork;
+}
+if (!store.data.jobs[id]) {
+  // Answered, reacted to, or refused: nothing runs in the background.
+  console.log(`[${ts()}] jobs en el hilo: 0`);
+  process.exit(0);
+}
 await inbox;
 
 const followUp = values["follow-up"]?.trim();

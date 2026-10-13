@@ -1,4 +1,4 @@
-import { answeredMessage, plainMessage, startMessage } from "./blocks.ts";
+import { ROUTE_QUESTION, answeredMessage, plainMessage, routeAskMessage, startMessage } from "./blocks.ts";
 import type { Block, Click } from "./blocks.ts";
 import { commandMode, helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
@@ -12,6 +12,8 @@ import type { Orca, WorkerStart } from "./orca.ts";
 import { pullTarget } from "./parse.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { clearReports, planPath, reportPath, slackPost } from "./report.ts";
+import { BUTTON_LABELS, decideRoute, routeHint, routeState } from "./route.ts";
+import type { AskableRoute, Decision, RouteAnswer, RouteState } from "./route.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
 
@@ -46,6 +48,8 @@ export type BotDeps = {
   filesRoot: string;
   /** A GET of a Slack file URL, authenticated as the bot. */
   fetchFile(url: string): Promise<Response>;
+  /** Jev's reading of a plain mention; absent without a TypeSafe key, and then a plain mention is a change. */
+  classify?(state: RouteState): Promise<RouteAnswer>;
 };
 
 export type Mention = {
@@ -142,9 +146,49 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
     return replyOtherTask(deps, existing, m.ownTarget);
   }
   if (existing && isActive(existing)) return handleThreadInput(deps, existing, m, { onlyFresh: true });
-  if (existing && isResumable(existing)) return startFollowUp(deps, existing, m, mode);
-  if (starting.has(id)) return;
-  return startJob(deps, m, mode);
+  if (!m.command && deps.classify) return routeMention(deps, m, existing);
+  return runMode(deps, m, mode);
+}
+
+/** `note` is appended to the start message, to say how a mention without a command was understood. */
+function runMode(deps: BotDeps, m: Mention, mode: Mode, note?: string): Promise<void> {
+  const id = jobId(m.channel, m.threadTs);
+  const existing = deps.store.data.jobs[id];
+  if (existing && isActive(existing)) return handleThreadInput(deps, existing, m, { onlyFresh: true });
+  if (existing && isResumable(existing)) return startFollowUp(deps, existing, m, mode, note);
+  if (starting.has(id)) return Promise.resolve();
+  return startJob(deps, m, mode, undefined, note);
+}
+
+function runRoute(deps: BotDeps, m: Mention, route: AskableRoute, note?: string): Promise<void> {
+  return route === "question" ? answer(deps, m, note) : runMode(deps, m, route, note);
+}
+
+/** A plain mention: Jev picks the route when it is sure enough for what that route costs, otherwise the human does. */
+async function routeMention(deps: BotDeps, m: Mention, job: Job | undefined): Promise<void> {
+  const id = jobId(m.channel, m.threadTs);
+  let decision: Decision;
+  try {
+    const answer = await deps.classify!(routeState(m, job));
+    decision = decideRoute(answer);
+    console.log(`route ${id}: ${answer.choice} @ ${answer.confidence.toFixed(2)} → ${decision.kind === "ask" ? "ask" : decision.route}`);
+  } catch (err) {
+    console.error(`routing ${id} failed, asking instead:`, err);
+    decision = { kind: "ask" };
+  }
+  if (decision.kind === "ask") return askRoute(deps, m);
+  if (decision.route === "none") return deps.poster.react(m.channel, m.ts, "thumbsup");
+  return runRoute(deps, m, decision.route, routeHint(decision.route));
+}
+
+async function askRoute(deps: BotDeps, m: Mention): Promise<void> {
+  const id = jobId(m.channel, m.threadTs);
+  const msg = routeAskMessage(id);
+  const ts = await deps.poster.postToThread(threadOf(m), msg.text, msg.blocks);
+  const previous = deps.store.data.pendingRoutes[id];
+  deps.store.data.pendingRoutes[id] = { ts, mention: m };
+  deps.store.save();
+  if (previous) await retireButtons(deps, m.channel, { ts: previous.ts, text: ROUTE_QUESTION });
 }
 
 /** A repo nobody named for this job, so naming another one corrects it instead of opening a separate task. */
@@ -214,9 +258,9 @@ export async function retireStart(deps: Pick<BotDeps, "poster">, before: Job | u
   await retireButtons(deps, before.slack.channel, before.startMsg);
 }
 
-function startJob(deps: BotDeps, m: Mention, mode: Mode, intro?: string): Promise<void> {
+function startJob(deps: BotDeps, m: Mention, mode: Mode, intro?: string, note?: string): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
-  const p = startJobOnce(deps, m, mode, intro).finally(() => starting.delete(id));
+  const p = startJobOnce(deps, m, mode, intro, note).finally(() => starting.delete(id));
   starting.set(id, p);
   return p;
 }
@@ -242,7 +286,11 @@ function runPaths(deps: BotDeps, id: string) {
   return { reportPath: reportPath(id), planPath: planPath(id), outbox: outboxDir(deps.filesRoot, id) };
 }
 
-async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: string): Promise<void> {
+function withNote(text: string, note: string | undefined): string {
+  return note ? `${text}\n_${note}_` : text;
+}
+
+async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: string, note?: string): Promise<void> {
   const where = threadOf(m);
   const target = mode === "review" && m.target ? pullTarget(m.target, m.text) : m.target;
   if (!target) {
@@ -260,7 +308,7 @@ async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: strin
     source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : source === "channel" ? " (repo del canal)" : "";
   await deps.poster.react(m.channel, m.ts, "saluting_face");
   const picker = source === "inferred" || source === "channel" ? { current: { owner, name }, repos: await knownReposOrNone(deps) } : undefined;
-  const startMsg = await postStart(deps, where, intro ?? START_TEXT[mode].first(label, issue !== undefined, guessed), picker);
+  const startMsg = await postStart(deps, where, withNote(intro ?? START_TEXT[mode].first(label, issue !== undefined, guessed), note), picker);
   let orcaRepoId: string;
   try {
     orcaRepoId = await deps.resolveRepo(owner, name);
@@ -285,14 +333,14 @@ async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: strin
 
 const CANCELLED_SUMMARY = "The user cancelled the previous worker before it finished. Its work so far is whatever is committed or left uncommitted in this worktree.";
 
-async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode): Promise<void> {
+async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode, note?: string): Promise<void> {
   if (!isResumable(job) || !job.worktreeId) return;
   const previous = job.state.kind === "done" ? job.state : { summary: CANCELLED_SUMMARY, prUrl: undefined };
   const worktree = worktreeSelector(job.worktreeId);
   const next = commit(deps, job, { kind: "follow_up", request: m.text, mode });
   if (!next) return;
   await deps.poster.react(m.channel, m.ts, "saluting_face");
-  const startMsg = await postStart(deps, next, START_TEXT[mode].followUp);
+  const startMsg = await postStart(deps, next, withNote(START_TEXT[mode].followUp, note));
   const current = deps.store.data.jobs[next.id];
   if (current === next) {
     deps.store.data.jobs[next.id] = { ...next, startMsg };
@@ -344,7 +392,7 @@ async function resumeSession(
 }
 
 /** Ask mode: no Job, worktree or PR, and an existing job in the thread is left alone. */
-async function answer(deps: BotDeps, m: Mention): Promise<void> {
+async function answer(deps: BotDeps, m: Mention, note?: string): Promise<void> {
   const where = threadOf(m);
   if (!m.text) {
     await deps.poster.postToThread(where, "Escribí la pregunta después del comando: `!pregunta ¿dónde se valida el token?`");
@@ -359,7 +407,7 @@ async function answer(deps: BotDeps, m: Mention): Promise<void> {
     const repoPath = await deps.orca.repoPath(await deps.resolveRepo(m.target.owner, m.target.name));
     const files = await bringFiles(deps, where, m.files);
     const text = await deps.ask({ repoPath, question: m.text, thread: m.context, files });
-    await deps.poster.postToThread(where, slackPost(text));
+    await deps.poster.postToThread(where, withNote(slackPost(text), note));
   } catch (err) {
     console.error(`ask in ${jobId(m.channel, m.threadTs)} failed:`, err);
     await deps.poster.postToThread(where, `❌ no pude responder: ${errorText(err)}`);
@@ -557,6 +605,18 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
         return;
       }
       handled = option !== undefined && (await answerWorker(deps, job!, option, input.user));
+      break;
+    }
+    case "route": {
+      const pending = deps.store.data.pendingRoutes[click.jobId];
+      if (pending?.ts === input.messageTs) {
+        handled = true;
+        delete deps.store.data.pendingRoutes[click.jobId];
+        deps.store.save();
+        const chosen = plainMessage(`${ROUTE_QUESTION}\n✅ <@${input.user}> eligió: ${BUTTON_LABELS[click.route]}`);
+        await deps.poster.update(input.channel, input.messageTs, chosen.text, chosen.blocks).catch((err) => console.error(`retiring route buttons in ${click.jobId} failed:`, err));
+        await runRoute(deps, pending.mention, click.route);
+      }
       break;
     }
   }
