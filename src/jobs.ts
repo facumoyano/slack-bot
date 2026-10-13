@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { doneMessage, planMessage, questionMessage } from "./blocks.ts";
 import type { Block, Message } from "./blocks.ts";
+import type { Approval } from "./approvals.ts";
 import type { Mention } from "./bot.ts";
 
 export type JobState =
@@ -65,6 +66,8 @@ export type Store = {
   channels: Record<string, RepoRef>;
   /** Per thread, the mention whose route the bot asked the human to pick, and the message holding the buttons. */
   pendingRoutes: Record<string, { ts: string; mention: Mention }>;
+  /** Teammates' requests by `approvalId`, pending or decided. */
+  approvals: Record<string, Approval>;
 };
 
 export type JobEvent =

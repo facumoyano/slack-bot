@@ -1,4 +1,6 @@
 import type { types } from "@slack/bolt";
+import { WORK_TEXT } from "./approvals.ts";
+import type { Approval } from "./approvals.ts";
 import type { RepoRef } from "./jobs.ts";
 import { ASKABLE, BUTTON_LABELS } from "./route.ts";
 import type { AskableRoute } from "./route.ts";
@@ -20,6 +22,8 @@ export const ACTIONS = {
   route: `${ACTION_PREFIX}route`,
   /** A URL button: Slack opens the link itself but still sends the click, which must be acked. */
   pr: `${ACTION_PREFIX}pr`,
+  approve: `${ACTION_PREFIX}approve`,
+  reject: `${ACTION_PREFIX}reject`,
 } as const;
 
 export const MAX_OPTION_BUTTONS = 5;
@@ -28,7 +32,8 @@ export type Click =
   | { kind: "answer"; jobId: string; questionMsgId: string; option: number }
   | { kind: "stop"; jobId: string }
   | { kind: "repo"; jobId: string; repo: RepoRef }
-  | { kind: "route"; jobId: string; route: AskableRoute };
+  | { kind: "route"; jobId: string; route: AskableRoute }
+  | { kind: "approval"; approvalId: string; decision: "approve" | "reject" };
 
 const SECTION_MAX = 3000;
 const LABEL_MAX = 75;
@@ -152,6 +157,54 @@ export function doneMessage(text: string, prUrl?: string): Message {
   };
 }
 
+const REQUEST_MAX = 600;
+const FILES_SHOWN = 5;
+
+function fileNames(files: readonly unknown[] = []): string | undefined {
+  if (!files.length) return undefined;
+  const names = files.map((f) => (f as { name?: unknown }).name).map((n) => (typeof n === "string" && n ? n : "archivo"));
+  const shown = names.slice(0, FILES_SHOWN).join(", ");
+  return `${names.length} (${shown}${names.length > FILES_SHOWN ? ", …" : ""})`;
+}
+
+function approvalText(a: Approval): string {
+  const m = a.mention;
+  const request = m.text.length > REQUEST_MAX ? `${m.text.slice(0, REQUEST_MAX)}…` : m.text;
+  const where = a.link ? `<#${m.channel}> (<${a.link}|ver mensaje>)` : `<#${m.channel}>`;
+  const files = fileNames(m.files);
+  return [
+    `🙋 <@${m.user}> me pidió algo en ${where}:`,
+    request.trim() ? request.split("\n").map((line) => `> ${line}`).join("\n") : "> _(sin texto)_",
+    `*Repo:* ${a.target}`,
+    `*Qué haría:* ${WORK_TEXT[a.work]}${a.followUp ? " (sigue la tarea de ese hilo)" : ""}`,
+    ...(files ? [`*Archivos:* ${files}`] : []),
+  ].join("\n");
+}
+
+const DECIDED: Record<Exclude<Approval["state"]["kind"], "pending">, string> = { approved: "✅ aprobado", rejected: "🚫 rechazado", expired: "⌛ venció" };
+
+/** The card DMed to each owner: what a teammate asked and what would run, with Aprobar and Rechazar; once decided, the outcome instead. */
+export function approvalCard(a: Approval): Message {
+  const text = approvalText(a);
+  if (a.state.kind !== "pending") {
+    const by = "by" in a.state ? ` por <@${a.state.by}>` : "";
+    return plainMessage(`${text}\n\n*${DECIDED[a.state.kind]}*${by}`);
+  }
+  return {
+    text: `${text}\n¿Lo aprobás?`,
+    blocks: [
+      ...textBlocks(text),
+      {
+        type: "actions",
+        elements: [
+          { type: "button", action_id: ACTIONS.approve, style: "primary", text: { type: "plain_text", text: "Aprobar" }, value: a.id },
+          { type: "button", action_id: ACTIONS.reject, style: "danger", text: { type: "plain_text", text: "Rechazar" }, value: a.id },
+        ],
+      },
+    ],
+  };
+}
+
 const JOB_ID = /^[A-Za-z0-9]+:\d+\.\d+$/;
 const REPO = /^([A-Za-z0-9][A-Za-z0-9_.-]*)\/([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
 
@@ -167,6 +220,9 @@ function json(value: string): Record<string, unknown> | undefined {
 /** Validates a click from Slack; anything that is not exactly what the builders above produce is undefined. */
 export function parseClick(actionId: string, value: string | undefined): Click | undefined {
   if (value === undefined) return undefined;
+  if (actionId === ACTIONS.approve || actionId === ACTIONS.reject) {
+    return JOB_ID.test(value) ? { kind: "approval", approvalId: value, decision: actionId === ACTIONS.approve ? "approve" : "reject" } : undefined;
+  }
   if (actionId === ACTIONS.stop) return JOB_ID.test(value) ? { kind: "stop", jobId: value } : undefined;
   if (actionId === ACTIONS.repo) {
     const v = json(value);
