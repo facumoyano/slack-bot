@@ -93,7 +93,7 @@ test("an owner's DM without a link, for an unknown thread, or for a busy one get
 
   assert.match(f.dms[0].text, /^Pegá el link de un mensaje del hilo y qué querés que haga/);
   assert.equal(f.dms[1].text, "no tengo un trabajo en ese hilo");
-  assert.equal(f.dms[2].text, "ese hilo está trabajando ahora; mandámelo cuando termine");
+  assert.equal(f.dms[2].text, `ese hilo está trabajando ahora; mandámelo cuando termine (https://slack.test/${CHANNEL}/1791548003.000001)`);
   assert.deepEqual([f.posts, f.calls], [[], []]);
 });
 
@@ -124,6 +124,41 @@ test("an owner's private question gets a private answer by DM and the thread see
   assert.ok(f.calls.includes("release d3"));
   assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state, "back to the thread's own finished run");
   assert.ok(isResumable(f.store.data.jobs[ID]));
+});
+
+test("a DM without a link continues the owner's last thread in the same session, until a link switches it", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "relay-store-")), "state.json");
+  const f = setup(openStore(path));
+  const OTHER = "1791548003.000001";
+  f.deps.store.data.jobs[`${CHANNEL}:${OTHER}`] = { ...doneJob(), id: `${CHANNEL}:${OTHER}`, slack: { channel: CHANNEL, threadTs: OTHER, requester: "U1" }, sessionId: "sess-9" };
+
+  await handleDm(f.deps, { user: "U1", text: `${LINK} ¿qué quedó pendiente?` });
+  await workerWrites("private\n\nQueda mover la tabla.");
+  await processBatch(f.deps, [done("w-1")]);
+  f.deps.store = openStore(path);
+  await handleDm(f.deps, { user: "U1", text: "dale, escribile a @salva lo que hablamos" });
+
+  assert.equal(f.dms.at(-1)!.text, `👌 voy con eso en ${THREAD_LINK}`);
+  assert.deepEqual(f.calls.filter((c) => c.startsWith("terminal")), [RESUME[0], RESUME[0]], "both steps resume the thread's own session");
+  assert.match(f.specs.at(-1)!, /PRIVATE INSTRUCTION[\s\S]*dale, escribile a @salva lo que hablamos/);
+  assert.match(f.specs.at(-1)!, /Salva: `<@U0SALVA01>`/);
+  await workerWrites("await: none\n\n<@U0SALVA01> queda pendiente mover la tabla de permisos.");
+  await processBatch(f.deps, [done("w-2")]);
+  assert.deepEqual(f.posts, ["<@U0SALVA01> queda pendiente mover la tabla de permisos."]);
+
+  await handleDm(f.deps, { user: "U1", text: `https://acme.slack.com/archives/${CHANNEL}/p1791548003000001 ¿y acá?` });
+  await handleDm(f.deps, { user: "U1", text: "¿algo más?" });
+  assert.equal(openStore(path).data.dmThreads.U1, `${CHANNEL}:${OTHER}`, "the new link switched the thread, also on disk");
+  assert.equal(f.dms.at(-1)!.text, `ese hilo está trabajando ahora; mandámelo cuando termine (https://slack.test/${CHANNEL}/${OTHER})`, "the linkless DM went to the new thread");
+  assert.match(f.calls.at(-3)!, /--resume sess-9$/);
+  await rm(dirname(path), { recursive: true, force: true });
+});
+
+test("an owner's first DM ever without a link gets the usage", async () => {
+  const f = setup();
+  await handleDm(f.deps, { user: "U1", text: "¿qué quedó pendiente?" });
+  assert.match(f.dms[0].text, /^Pegá el link de un mensaje del hilo/);
+  assert.deepEqual(f.calls, []);
 });
 
 test("the first step's message goes to the thread exactly as written, and the wait for salva survives a restart", async () => {

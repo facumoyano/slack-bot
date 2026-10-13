@@ -799,11 +799,12 @@ function teammateMayClick(deps: BotDeps, click: Exclude<Click, { kind: "approval
   }
 }
 
-const RELAY_USAGE = "Pegá el link de un mensaje del hilo y qué querés que haga, por ejemplo: `<link> preguntale a @salva por qué guardó los permisos en esa tabla`.";
+const RELAY_USAGE = "Pegá el link de un mensaje del hilo y qué querés que haga, por ejemplo: `<link> preguntale a @salva por qué guardó los permisos en esa tabla`. Después podés seguir sin el link: voy al último hilo del que me hablaste.";
 
 /**
- * An owner's private instruction for a thread's session. Nothing reaches the thread but the message the worker writes,
- * so nobody there learns the owner asked for it; every answer and failure goes back by DM.
+ * An owner's private instruction for a thread's session. Nothing reaches the thread but a message the worker writes,
+ * so nobody there learns the owner asked for it; every answer and failure goes back by DM, naming the thread.
+ * A DM without a link continues the owner's last thread, so the private conversation goes on in the same session.
  */
 export async function handleDm(deps: BotDeps, dm: DirectMessage): Promise<void> {
   if (accessOf(deps, dm.user) !== "owner") return;
@@ -811,16 +812,20 @@ export async function handleDm(deps: BotDeps, dm: DirectMessage): Promise<void> 
     await deps.poster.dm(dm.user, text).catch((err) => console.error(`DM to ${dm.user} failed:`, err));
   };
   const link = parseThreadLink(dm.text);
-  const instruction = link && instructionOf(dm.text, link);
-  if (!link || !instruction) return tell(RELAY_USAGE);
-  const id = jobId(link.channel, link.threadTs);
+  const id = link ? jobId(link.channel, link.threadTs) : deps.store.data.dmThreads[dm.user];
+  const instruction = link ? instructionOf(dm.text, link) : dm.text.trim();
+  if (!id || !instruction) return tell(RELAY_USAGE);
   await starting.get(id);
   const job = deps.store.data.jobs[id];
-  if (!job) return tell("no tengo un trabajo en ese hilo");
-  if (isActive(job)) return tell("ese hilo está trabajando ahora; mandámelo cuando termine");
-  if (!isResumable(job) || !job.sessionId) return tell("no tengo una sesión que pueda retomar en ese hilo");
+  if (!job) return tell(link ? "no tengo un trabajo en ese hilo" : "no tengo un trabajo en el último hilo que me pasaste; pegame el link de otro");
+  if (deps.store.data.dmThreads[dm.user] !== id) {
+    deps.store.data.dmThreads[dm.user] = id;
+    deps.store.save();
+  }
+  const thread = await deps.poster.permalink(job.slack.channel, job.slack.threadTs).catch(() => link?.url ?? id);
+  if (isActive(job)) return tell(`ese hilo está trabajando ahora; mandámelo cuando termine (${thread})`);
+  if (!isResumable(job) || !job.sessionId) return tell(`no tengo una sesión que pueda retomar en ${thread}`);
   const named = await namedPeople(deps, instruction);
-  const thread = await deps.poster.permalink(link.channel, link.threadTs).catch(() => link.url);
   const next = commit(deps, job, { kind: "relay", relay: { owner: dm.user, instruction, ...named, link: thread } });
   if (!next) return;
   await tell(`👌 voy con eso en ${thread}`);

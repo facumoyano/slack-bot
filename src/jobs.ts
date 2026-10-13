@@ -87,6 +87,8 @@ export type Store = {
   pendingRoutes: Record<string, { ts: string; mention: Mention }>;
   /** Teammates' requests by `approvalId`, pending or decided. */
   approvals: Record<string, Approval>;
+  /** Per owner, the job of the thread their last DM was about; a DM without a link goes there. */
+  dmThreads: Record<string, string>;
 };
 
 export type JobEvent =
