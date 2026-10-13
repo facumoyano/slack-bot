@@ -327,7 +327,7 @@ function prLabel(url: string): string {
 
 function filesList(files: readonly string[] | undefined): string {
   if (!files) return "_No pude leer qué archivos se commitearon._";
-  return files.length ? `*Archivos:*\n${files.map((f) => `• \`${f}\``).join("\n")}` : "No commiteé archivos.";
+  return files.length ? `*Archivos commiteados:*\n${files.map((f) => `• \`${f}\``).join("\n")}` : "No commiteé archivos.";
 }
 
 function doneMessageFor(job: Job, outcome: "succeeded" | "failed", summary: string, prUrl: string | undefined, changedFiles?: readonly string[]): Message {

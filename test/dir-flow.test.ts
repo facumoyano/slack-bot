@@ -121,7 +121,7 @@ test("done in a directory posts listo en mkt-fyso with the report and the commit
   }
 
   const post = f.messages.at(-1)!;
-  assert.equal(post.text, "✅ <@U1> listo en mkt-fyso.\n\n*Qué hice*\n\nCreé `contenido/notas.md` con 3 ideas.\n\n*Archivos:*\n• `contenido/notas.md`");
+  assert.equal(post.text, "✅ <@U1> listo en mkt-fyso.\n\n*Qué hice*\n\nCreé `contenido/notas.md` con 3 ideas.\n\n*Archivos commiteados:*\n• `contenido/notas.md`");
   assert.equal(post.blocks, undefined, "no PR button");
   assert.ok(!f.calls.includes("lookup"), "no PR lookup");
   assert.equal(f.store.data.jobs[id].state.kind, "done");
