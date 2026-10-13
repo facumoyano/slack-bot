@@ -19,6 +19,7 @@ running_bot() {
 }
 
 handle_file="$dir/data/bot-terminal"
+log_file="$dir/data/bot.log"
 
 if pid="$(running_bot)"; then
   if [ "${1:-}" != --restart ]; then
@@ -28,11 +29,26 @@ if pid="$(running_bot)"; then
   kill "$pid"
   while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 fi
-# The old bot's terminal stays open at a shell prompt after the process ends; close it so restarts don't pile up terminals.
+# A terminal left by an older start (before the bot ran detached) is closed so restarts don't pile up terminals.
 if [ -f "$handle_file" ]; then
   orca terminal close --terminal "$(cat "$handle_file")" --json >/dev/null 2>&1 || true
   rm -f "$handle_file"
 fi
 mkdir -p "$dir/data"
-orca terminal create --worktree "path:$dir" --title slack-bot --command "node --env-file=.env src/main.ts" --json |
-  node -e 'const j=JSON.parse(require("fs").readFileSync(0)); const h=j.result?.terminal?.handle; if(!h){console.error(JSON.stringify(j));process.exit(1)} require("fs").writeFileSync(process.argv[1], h); console.log(`bot arrancado en la terminal ${h}`)' "$handle_file"
+# Orca only binds the coordinator Run from a live terminal, so the bot starts in one, detaches from it, and the
+# terminal is closed once the bot is connected; Orca keeps serving the detached process after that.
+start_line=$(( $( { wc -l < "$log_file"; } 2>/dev/null || echo 0) + 1 ))
+handle=$(orca terminal create --worktree "path:$dir" --title slack-bot \
+  --command "setsid nohup node --env-file=.env src/main.ts >> data/bot.log 2>&1 < /dev/null & disown" --json |
+  node -e 'const j=JSON.parse(require("fs").readFileSync(0)); const h=j.result?.terminal?.handle; if(!h){console.error(JSON.stringify(j));process.exit(1)} console.log(h)')
+for _ in $(seq 1 120); do
+  if tail -n +"$start_line" "$log_file" 2>/dev/null | grep -q "slack: connected"; then
+    orca terminal close --terminal "$handle" --json >/dev/null 2>&1 || true
+    echo "bot arrancado en segundo plano (pid $(running_bot)); logs en data/bot.log"
+    exit 0
+  fi
+  sleep 0.5
+done
+echo "el bot no se conectó en 60 s; dejo abierta su terminal $handle para ver qué pasó. Últimas líneas de data/bot.log:" >&2
+tail -n +"$start_line" "$log_file" >&2 2>/dev/null || true
+exit 1
