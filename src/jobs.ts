@@ -3,7 +3,7 @@ import { MESSAGE_MAX, doneMessage, planMessage, questionMessage } from "./blocks
 import type { Block, Message } from "./blocks.ts";
 import type { Approval } from "./approvals.ts";
 import type { Mention } from "./bot.ts";
-import { parseRelayFile } from "./relay.ts";
+import { digestText, parseRelayFile } from "./relay.ts";
 import type { UnknownName } from "./relay.ts";
 import { slackPost } from "./report.ts";
 
@@ -397,7 +397,7 @@ function relayOutcome(
       if (payload.outcome !== "succeeded") return fail(summaryOf(msg) || "el worker terminó sin éxito.");
       if (!extras.relayFile) return fail("el worker no dejó el archivo con el mensaje.");
       if (step.kind === "digest") {
-        return { job: ended(sessionId), release, dm: { user: relay.owner, threadTs: relay.dmThread, text: `💬 ${step.from.name} respondió ${where}:\n\n${slackPost(extras.relayFile)}` } };
+        return { job: ended(sessionId), release, dm: { user: relay.owner, threadTs: relay.dmThread, text: `💬 ${step.from.name} respondió ${where}:\n\n${slackPost(digestText(extras.relayFile))}` } };
       }
       const parsed = parseRelayFile(extras.relayFile, { people: relay.people.map((p) => p.id), unknown: relay.unknown, owner: relay.owner });
       if ("error" in parsed) return fail(parsed.error);

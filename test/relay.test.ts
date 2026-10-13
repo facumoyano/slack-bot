@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { instructionOf, mentionedUsers, parseRelayFile, parseThreadLink } from "../src/relay.ts";
+import { digestText, instructionOf, mentionedUsers, parseRelayFile, parseThreadLink } from "../src/relay.ts";
 
 const ROOT = "https://acme.slack.com/archives/C0ABC123/p1791548002024869";
 
@@ -69,4 +69,9 @@ test("a malformed thread file is an error, never a message", () => {
 test("a thread message for a name that matched nobody in Slack is refused with the reason", () => {
   assert.deepEqual(parseRelayFile("await: @zoe\n\n@zoe ¿te parece bien?", rules), { error: 'no encontré a "zoe" en Slack' });
   assert.deepEqual(parseRelayFile("await: none\n\n@Zoe el PR está listo.", rules), { error: 'no encontré a "zoe" en Slack' });
+});
+
+test("a reply's digest is the file as written, without a private header carried over from an earlier answer", () => {
+  assert.equal(digestText("private\n\n*Qué respondió Salva.* Está de acuerdo."), "*Qué respondió Salva.* Está de acuerdo.");
+  assert.equal(digestText("Salva prefiere una tabla privada aparte."), "Salva prefiere una tabla privada aparte.");
 });

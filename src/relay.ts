@@ -31,6 +31,11 @@ export function mentionedUsers(text: string): string[] {
   return found;
 }
 
+/** The digest of a reply is plain Markdown; a worker that already wrote a private answer in this session may still head it `private`. */
+export function digestText(raw: string): string {
+  return raw.replace(/^\s*private[ \t]*\n/i, "").trim();
+}
+
 /** A name in the owner's DM that matched nobody in Slack, with the reason matching gave. */
 export type UnknownName = { name: string; why: string };
 

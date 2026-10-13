@@ -298,7 +298,7 @@ export function buildRelaySpec(input: RelaySpecInput): string {
       ...RELAY_CONSTRAINTS,
       "",
       "## Observable acceptance",
-      `- Write a private summary for the bot's owner, in Spanish Markdown, to \`${relayPath}\` (outside the repo; never commit it): what ${step.from.name} answered, whether it changes anything you did and why, and what you recommend. Short sentences; \`path:line\` and PR links where they back a point.`,
+      `- Write a private summary for the bot's owner, in Spanish Markdown, to \`${relayPath}\` (outside the repo; never commit it): what ${step.from.name} answered, whether it changes anything you did and why, and what you recommend. Plain Markdown with no header line. Short sentences; \`path:line\` and PR links where they back a point.`,
       "- Your final `worker_done` uses `--outcome succeeded` with a one-line body. Use `--outcome failed` if you could not write the summary, and say why in the body.",
     ].join("\n");
   }
