@@ -26,11 +26,15 @@ const { values, positionals } = parseArgs({
     "follow-up": { type: "string" },
     "cancel-after": { type: "string" },
     attach: { type: "string", multiple: true },
+    as: { type: "string", default: "USIM" },
+    teammates: { type: "string", default: "UTEAM" },
   },
 });
 const request = positionals.join(" ").trim();
 if (!request) {
-  console.error('usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... "<request text or !command>"');
+  console.error(
+    'usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... "<request text or !command>"',
+  );
   process.exit(2);
 }
 
@@ -88,7 +92,17 @@ const poster: Poster = {
     console.log(`[${ts()}] [slack permalink de ${channel}/${messageTs}] ${link}`);
     return link;
   },
+  async dm(user, text, blocks) {
+    const messageTs = nextTs();
+    console.log(`\n[${ts()}] [slack → DM a ${user}, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
+    return { channel: `DSIM-${user}`, ts: messageTs };
+  },
 };
+
+/** USIM is the owner; `--as` mentions and replies as someone else, a teammate when listed in `--teammates`. */
+const OWNER = "USIM";
+const user = values.as!;
+const teammates = new Set(values.teammates!.split(",").map((s) => s.trim()).filter(Boolean));
 
 const command = parseCommand(request);
 const text = command ? command.rest : request;
@@ -125,7 +139,7 @@ const classify = typesafeKey
     }
   : undefined;
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set(["USIM"]), latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify };
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify };
 const channel = "SIM";
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
 const target =
@@ -138,12 +152,9 @@ const finished = () => {
   return kind === "done" || kind === "failed" || kind === "cancelled";
 };
 
-console.log(`[${ts()}] [usuario USIM] @bot ${request}`);
-if (command?.name === "pregunta" || command?.name === "repo") {
-  await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command.name, target, files: attached });
-  console.log(`[${ts()}] jobs en el hilo: ${store.data.jobs[id] ? "1" : "0"}`);
-  process.exit(0);
-}
+const pendingApproval = () => Object.values(store.data.approvals).some((a) => a.state.kind === "pending" && a.mention.threadTs === threadTs);
+
+console.log(`[${ts()}] [usuario ${user}] @bot ${request}`);
 /** The latest click's work, so the run waits for a picked route to finish starting. */
 let clickWork: Promise<void> = Promise.resolve();
 const stdin = createInterface({ input: process.stdin });
@@ -152,7 +163,7 @@ stdin.on("line", (line) => {
   if (!text) return;
   const click = /^:click(?:-as\s+(\S+))?\s+(\S+)\s+(.+)$/.exec(text);
   if (click) {
-    const [, as = "USIM", action, value] = click;
+    const [, as = OWNER, action, value] = click;
     const messageTs = clickable.get(`${action} ${value}`);
     const parsed = parseClick(action, value);
     if (!parsed || !messageTs) return console.log(`[${ts()}] (click desconocido: ${action} ${value})`);
@@ -160,8 +171,8 @@ stdin.on("line", (line) => {
     clickWork = handleClick(deps, { click: parsed, user: as, channel, threadTs, messageTs }).catch((err) => console.error("click failed:", err));
     return;
   }
-  console.log(`[${ts()}] [usuario USIM responde en hilo] ${text}`);
-  handleThreadReply(deps, { channel, threadTs, ts: nextTs(), user: "USIM", text })
+  console.log(`[${ts()}] [usuario ${user} responde en hilo] ${text}`);
+  handleThreadReply(deps, { channel, threadTs, ts: nextTs(), user, text })
     .then((handled) => handled || console.log(`[${ts()}] (sin job activo en el hilo; ignorado)`))
     .catch((err) => console.error("thread reply failed:", err));
 });
@@ -174,19 +185,26 @@ if (cancelAfter) {
     if (store.data.jobs[id]?.state.kind !== "working") return;
     clearInterval(waitForWorker);
     setTimeout(() => {
-      console.log(`[${ts()}] [usuario USIM menciona en el hilo] @bot !parar`);
-      handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user: "USIM", text: "", command: "parar" }).catch((err) =>
+      console.log(`[${ts()}] [usuario ${user} menciona en el hilo] @bot !parar`);
+      handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user, text: "", command: "parar" }).catch((err) =>
         console.error("cancel failed:", err),
       );
     }, cancelAfter);
   }, 500);
 }
-await handleMention(deps, { channel, threadTs, ts: threadTs, user: "USIM", text, command: command?.name, target, files: attached });
-if (!store.data.jobs[id] && store.data.pendingRoutes[id]) {
-  console.log(`[${ts()}] (esperando que elijas una opción: pegá una línea :click …)`);
-  while (store.data.pendingRoutes[id]) await new Promise((r) => setTimeout(r, 200));
-  await clickWork;
+
+/** A picked route can lead to an approval, so wait until neither is pending and the last click's work is done. */
+async function waitForClicks(): Promise<void> {
+  for (;;) {
+    await clickWork;
+    if (!store.data.pendingRoutes[id] && !pendingApproval()) return;
+    console.log(`[${ts()}] (esperando ${pendingApproval() ? "la aprobación" : "que elijas una opción"}: pegá una línea :click …)`);
+    while (store.data.pendingRoutes[id] || pendingApproval()) await new Promise((r) => setTimeout(r, 200));
+  }
 }
+
+await handleMention(deps, { channel, threadTs, ts: threadTs, user, text, command: command?.name, target, files: attached });
+if (!store.data.jobs[id]) await waitForClicks();
 if (!store.data.jobs[id]) {
   // Answered, reacted to, or refused: nothing runs in the background.
   console.log(`[${ts()}] jobs en el hilo: 0`);
@@ -197,10 +215,11 @@ await inbox;
 const followUp = values["follow-up"]?.trim();
 if (followUp && store.data.jobs[id].state.kind === "done") {
   console.log(`[${ts()}] estado intermedio: ${JSON.stringify(store.data.jobs[id])}`);
-  console.log(`[${ts()}] [usuario USIM menciona en el hilo] @bot ${followUp}`);
+  console.log(`[${ts()}] [usuario ${user} menciona en el hilo] @bot ${followUp}`);
   const followUpCommand = parseCommand(followUp);
   // The job is still done until the mention lands, and runInbox would stop at once on a finished job.
-  await handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user: "USIM", text: followUpCommand?.rest ?? followUp, command: followUpCommand?.name });
+  await handleMention(deps, { channel, threadTs, ts: (Date.now() / 1000).toFixed(6), user, text: followUpCommand?.rest ?? followUp, command: followUpCommand?.name });
+  await waitForClicks();
   await runInbox(inboxDeps, finished);
 }
 console.log(`[${ts()}] estado final: ${JSON.stringify(store.data.jobs[id])}`);
