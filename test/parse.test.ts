@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chooseTarget, findTarget, messageTexts, parseTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
+import { chooseTarget, findTarget, messageTexts, parseTarget, pullTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
 
 test("issue URL wrapped as a Slack link", () => {
   assert.deepEqual(parseTarget(["mirá <https://github.com/acme/web-app/issues/42|acme/web-app#42 Login roto>"]), {
@@ -134,4 +134,13 @@ test("a separate task ignores the thread but still uses the channel default", as
   const target = await chooseTarget({ own: ["otra cosa"], thread: ["https://github.com/o/old/issues/1"], repos: known, channelRepo, separate: true, infer: r.infer });
 
   assert.deepEqual(target, { owner: "acme", name: "chan", source: "channel" });
+});
+
+test("a review's PR: a bare #n names it on the target's repo, else the target's own number, always as a pull URL", () => {
+  const repo = { owner: "acme", name: "api", source: "channel" as const };
+  assert.deepEqual(pullTarget(repo, "#12 mirá los errores"), { ...repo, issue: { number: 12, url: "https://github.com/acme/api/pull/12" } });
+  const short = { ...repo, source: "link" as const, issue: { number: 7, url: "https://github.com/acme/api/issues/7" } };
+  assert.deepEqual(pullTarget(short, "acme/api#7"), { ...short, issue: { number: 7, url: "https://github.com/acme/api/pull/7" } });
+  assert.equal(pullTarget(repo, "revisá el PR"), undefined);
+  assert.equal(pullTarget(repo, "el issue#3 no cuenta"), undefined, "a # glued to a word is not a PR number");
 });

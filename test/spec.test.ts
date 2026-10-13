@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSpec, taskTitle } from "../src/spec.ts";
+import { buildSpec, wantsGithubComment, taskTitle } from "../src/spec.ts";
 
 const base = {
   repo: { owner: "acme", name: "api", orcaRepoId: "r1" },
@@ -112,7 +112,49 @@ test("a plan spec gates implementation on an Aprobar/Cambiar ask about the plan 
 
 test("a change spec has no plan gate and no investigation rules", () => {
   const spec = buildSpec({ ...paths, job: { ...base, request: "agregá un README" } });
-  for (const other of [/Plan approval/, /\/tmp\/r\.plan\.md/, /Aprobar/, /Investigation playbook/, /Respuesta corta/]) assert.doesNotMatch(spec, other);
+  for (const other of [/Plan approval/, /\/tmp\/r\.plan\.md/, /Aprobar/, /Investigation playbook/, /Do not commit, push, open a PR/]) assert.doesNotMatch(spec, other);
+});
+
+test("a change spec lets a request that needs no code end succeeded without a PR, with the review or investigation report; a plan spec does not", () => {
+  const change = buildSpec({ ...paths, job: { ...base, request: "¿esto está bien?" } });
+  assert.match(change, /If the request turns out to need no code change \(it was a review or a question\), open no PR\./);
+  assert.match(change, /\*\*Veredicto\*\*[\s\S]*\*\*Respuesta corta\*\*[\s\S]*`--outcome succeeded` and no `PR:` line/);
+  assert.match(change, /Use `--outcome failed` if a change was needed and no PR was opened/);
+  const plan = buildSpec({ ...paths, job: { ...base, mode: "plan", request: "arreglá el issue 1717" } });
+  assert.doesNotMatch(plan, /turns out to need no code change/);
+});
+
+const pr = { number: 7, url: "https://github.com/acme/api/pull/7" };
+
+test("a review spec is a read-only review of the PR: no commit, push, approve or request changes, and no GitHub comment unless asked", () => {
+  const spec = buildSpec({ ...paths, job: { ...base, issue: pr, mode: "review", request: "mirá el manejo de errores" } });
+  assert.match(spec, /pstack:poteto-mode[^\n]*read-only review of an existing pull request[^\n]*Investigation is the closest bundled one/);
+  assert.match(spec, /pull request #7 \(https:\/\/github\.com\/acme\/api\/pull\/7\)/);
+  assert.match(spec, /gh pr view 7 --repo acme\/api --comments/);
+  assert.match(spec, /gh pr checkout/);
+  assert.match(spec, /Do not commit, push, approve the PR or request changes on it/);
+  assert.match(spec, /revert every local change before `worker_done`/);
+  assert.match(spec, /Do not comment on GitHub/);
+  assert.match(spec, /BEGIN SLACK REVIEW REQUEST[\s\S]*manejo de errores/);
+  assert.match(spec, /\*\*Veredicto\*\* \(one line: listo para mergear, cambios menores or bloqueante, and why\), \*\*Hallazgos\*\* \(ordered by severity, each with its `path:line`[^)]*\), \*\*Qué verifiqué\*\*, \*\*Sugerencias\*\*, \*\*Pendiente\*\*/);
+  for (const demand of [/gh pr create/, /git push -u origin HEAD/, /gh pr review/, /Opening a PR playbook/, /Closes #/]) assert.doesNotMatch(spec, demand);
+});
+
+test("a review asked to be left on GitHub may post one comment review, never an approval or a change request", () => {
+  const spec = buildSpec({ ...paths, job: { ...base, issue: pr, mode: "review", request: "revisalo y dejá el review en GitHub" } });
+  assert.match(spec, /post it once, as a single `gh pr review <number> --comment` or `gh pr comment <number>`\. Never `--approve` or `--request-changes`/);
+  assert.doesNotMatch(spec, /Do not comment on GitHub/);
+  assert.match(spec, /Do not commit, push, approve the PR or request changes on it/);
+});
+
+test("only an explicit ask to leave it on GitHub counts", () => {
+  for (const yes of ["dejá el review en GitHub", "comentalo en el PR", "publicá los hallazgos en GitHub", "leave the review on github"]) assert.ok(wantsGithubComment(yes), yes);
+  for (const no of ["revisá el PR", "mirá si los tests de github actions pasan", "¿está listo para mergear?", ""]) assert.ok(!wantsGithubComment(no), no);
+});
+
+test("a resumed review is not told to update a PR", () => {
+  const spec = buildSpec({ ...paths, job: { ...base, issue: pr, mode: "review", request: "y ahora?" }, resumed: true, previousPrUrl: pr.url });
+  assert.doesNotMatch(spec, /Update the existing PR/);
 });
 
 test("a resumed run in another mode is told this spec replaces the previous one; an investigation is not told to update a PR", () => {

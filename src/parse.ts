@@ -64,6 +64,19 @@ export function matchKnownRepo(texts: readonly string[], repos: readonly KnownRe
   return undefined;
 }
 
+const BARE_NUMBER = /(?:^|[\s(])#(\d+)\b/;
+
+/**
+ * The pull request a review targets, as a `/pull/` URL: a bare `#n` in the request names it on the target's repo,
+ * else the target's own number. Undefined when neither names one.
+ */
+export function pullTarget(target: FoundTarget, request: string): FoundTarget | undefined {
+  const bare = BARE_NUMBER.exec(request);
+  const number = bare ? Number(bare[1]) : target.issue?.number;
+  if (number === undefined) return undefined;
+  return { ...target, issue: { number, url: `https://github.com/${target.owner}/${target.name}/pull/${number}` } };
+}
+
 /** A link or `owner/repo#n` first, then an exact known repo name. Claude's guess is the caller's last resort. */
 export function findTarget(texts: readonly string[], repos: readonly KnownRepo[]): FoundTarget | undefined {
   const linked = parseTarget(texts);

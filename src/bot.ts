@@ -9,6 +9,7 @@ import { PLAN_OPTIONS, isActive, isOtherTask, isResumable, jobId, jobLabel, newJ
 import type { Job, JobEvent, Mode, RepoRef } from "./jobs.ts";
 import { worktreePath, worktreeSelector } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
+import { pullTarget } from "./parse.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { clearReports, planPath, reportPath, slackPost } from "./report.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
@@ -232,6 +233,7 @@ const START_TEXT: Record<Mode, { first(label: string, issue: boolean, guessed: s
     first: (label, _issue, guessed) => `📋 armo un plan en ${label}${guessed}, te lo muestro antes de tocar código.`,
     followUp: `📋 armo un plan ${SAME_SESSION}; te lo muestro antes de tocar código.`,
   },
+  review: { first: (label, _issue, guessed) => `🔍 reviso ${label}${guessed}…`, followUp: `🔍 reviso ${SAME_SESSION}…` },
 };
 
 const FRESH_FOLLOW_UP = "⚠️ no pude retomar la sesión anterior: sigo con un worker nuevo en el mismo worktree, que arranca del resumen de lo que se hizo.";
@@ -242,16 +244,18 @@ function runPaths(deps: BotDeps, id: string) {
 
 async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: string): Promise<void> {
   const where = threadOf(m);
-  if (!m.target) {
-    await deps.poster.postToThread(
-      where,
-      `<@${m.user}> no encontré qué repo o issue tocar. Pasame el link del issue de GitHub (o \`owner/repo#123\`) en este hilo y mencioname de nuevo.`,
-    );
+  const target = mode === "review" && m.target ? pullTarget(m.target, m.text) : m.target;
+  if (!target) {
+    const missing =
+      mode === "review"
+        ? "no sé qué PR revisar. Pasame el link del PR (o `owner/repo#123`, o `#123` si el repo ya está claro)"
+        : "no encontré qué repo o issue tocar. Pasame el link del issue de GitHub (o `owner/repo#123`)";
+    await deps.poster.postToThread(where, `<@${m.user}> ${missing} en este hilo y mencioname de nuevo.`);
     return;
   }
 
-  const { owner, name, issue, source } = m.target;
-  const label = targetLabel(m.target);
+  const { owner, name, issue, source } = target;
+  const label = targetLabel(target);
   const guessed =
     source === "inferred" ? " (lo deduje del hilo; si no es ese, mencioname con el repo correcto)" : source === "channel" ? " (repo del canal)" : "";
   await deps.poster.react(m.channel, m.ts, "saluting_face");

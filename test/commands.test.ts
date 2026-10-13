@@ -83,6 +83,10 @@ test("!investiga and !plan parse with their aliases and pick their run's mode; o
     ["!plan arreglá el issue 1717", "plan", "plan"],
     ["!planear arreglá el issue 1717", "plan", "plan"],
     ["!nuevo arreglá el login", "nuevo", "change"],
+    ["!revisa https://github.com/acme/api/pull/7 mirá los tests", "revisa", "review"],
+    ["!revisá #7", "revisa", "review"],
+    ["!review acme/api#7", "revisa", "review"],
+    ["!revisar #7", "revisa", "review"],
   ];
   for (const [text, name, mode] of cases) {
     const command = parseCommand(text);
@@ -90,6 +94,7 @@ test("!investiga and !plan parse with their aliases and pick their run's mode; o
     assert.equal(commandMode(command?.name), mode, text);
   }
   assert.deepEqual(parseCommand("!investiga ¿por qué?"), { name: "investiga", rest: "¿por qué?" });
+  assert.deepEqual(parseCommand("!revisa #7 fijate los errores"), { name: "revisa", rest: "#7 fijate los errores" });
   assert.equal(commandMode(parseCommand("arreglá el login")?.name), "change");
   assert.equal(parseCommand("!planes para hoy"), undefined);
 });

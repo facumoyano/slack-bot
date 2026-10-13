@@ -13,6 +13,13 @@ const COMMANDS = [
     mode: "investigate",
   },
   { name: "plan", aliases: ["plan", "planear"], usage: "!plan <pedido>", help: "te muestro un plan para aprobar antes de tocar código; con tu ok sigo hasta el PR", mode: "plan" },
+  {
+    name: "revisa",
+    aliases: ["revisa", "review", "revisar"],
+    usage: "!revisa <PR> [qué mirar]",
+    help: "reviso un PR (link, `#número` u `owner/repo#n`) sin tocarlo y te dejo veredicto y hallazgos; si lo pedís, dejo el review como comentario en GitHub",
+    mode: "review",
+  },
   { name: "repo", aliases: ["repo"], usage: "!repo [repo | borrar]", help: "muestra, fija o borra el repo por defecto de este canal" },
   { name: "parar", aliases: ["parar", "cancelar", "stop"], usage: "!parar", help: "freno el trabajo de este hilo; la rama queda para retomarla" },
   { name: "aparte", aliases: ["aparte", "aside"], usage: "!aparte …", help: "ignoro ese mensaje, con o sin mención (para hablar entre ustedes en el hilo)" },
