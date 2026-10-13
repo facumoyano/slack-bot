@@ -13,7 +13,9 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 5. `gh auth setup-git` para que los workers puedan hacer `git push` con la sesión de `gh`.
 6. Invitá al bot a los canales (`/invite @alfred`).
 
-   Si la app ya estaba instalada de antes, los pedidos de compañeros (`APPROVAL_SLACK_USERS`) necesitan el scope `im:write` (para mandarle el DM al dueño) y en **App Home** la **Messages Tab** activada con "Allow users to send Slash commands and messages from the messages tab" apagado; está en el manifest, y como suma un scope hay que reinstalar.
+   Si la app ya estaba instalada de antes, los pedidos de compañeros (`APPROVAL_SLACK_USERS`) necesitan el scope `im:write` (para mandarle el DM al dueño) y en **App Home** la **Messages Tab** activada; está en el manifest, y como suma un scope hay que reinstalar.
+
+   Las instrucciones privadas por DM (ver abajo) necesitan el evento `message.im`, el scope `im:history` y, en **App Home → Messages Tab**, "Allow users to send Slash commands and messages from the messages tab" prendido. Están en el manifest; como suma un scope, hay que reinstalar.
 
    Los archivos necesitan los scopes `files:read` (bajar lo que le mandás) y `files:write` (subir lo que genera el worker): agregalos desde el manifest o en OAuth & Permissions y reinstalala (**Install App → Reinstall to Workspace**). Sin `files:read`, Slack devuelve una página de login en vez del archivo y el bot avisa en el hilo que falta el scope.
 7. `scripts/start-in-orca.sh`. Arranca el bot en segundo plano: abre una terminal de Orca (Orca solo ata la Run de orquestación desde una terminal viva), lanza `node --env-file=.env src/main.ts` desprendido de ella y, cuando el bot se conecta a Slack, cierra la terminal. Orca sigue atendiendo al proceso. Los logs quedan en `data/bot.log` (`tail -f data/bot.log`). Si ya hay un bot corriendo desde este directorio, muestra su pid y no arranca otro. Para reiniciarlo con código nuevo: `scripts/start-in-orca.sh --restart`. Si no se conecta en 60 s, deja la terminal abierta y muestra el log.
@@ -33,6 +35,19 @@ Bot de Slack que trabaja como un programador más. Lo mencionás en el hilo de u
 - Archivos de vuelta: el worker deja en `data/files/<hilo>/out/` lo que conviene que veas (capturas o un video corto de un cambio de UI, un PDF o deck, un log, un CSV). El bot los sube al hilo junto con la próxima pregunta, avance o reporte final, y los mueve a `out/sent/` para no subirlos dos veces. Si una subida falla, avisa con ⚠️ y sigue.
 
 Pedidos de compañeros. `ALLOWED_SLACK_USERS` son los dueños: piden sin aprobación y aprueban lo de los demás. `APPROVAL_SLACK_USERS` (IDs separados por coma) son compañeros que pueden mencionar al bot, pero nada de lo que piden arranca solo. El bot resuelve el repo y la ruta (Jev o los botones de ruta) como siempre, reacciona 👀 a la mención y le manda a cada dueño un DM con quién pidió, el canal y el link al mensaje, el pedido citado, el repo y qué haría (cambio de código con PR, revisión de PR, pregunta rápida…), los archivos adjuntos y los botones **Aprobar** y **Rechazar**. Gana la primera decisión de cualquier dueño y los DMs muestran el resultado. **Aprobar** corre el pedido exactamente como si lo hubiera hecho un dueño, pero a nombre del compañero: las preguntas del worker y el reporte lo mencionan a él. **Rechazar** deja en el hilo `🙅 por ahora no puedo tomar este pedido.` y no corre nada. Un pedido sin decidir vence a las 24 h y el hilo dice que no se pudo tomar. El compañero no ve nada de la aprobación: ni el dueño ni la palabra aparecen en el hilo. Los pedidos pendientes viven en `data/state.json`, así que un reinicio no los pierde. Dentro de su trabajo aprobado, el compañero responde las preguntas del worker (escribiendo o con botones), le manda indicaciones en el hilo y lo frena con `!parar` sin pedir aprobación. Otro compañero en ese hilo se ignora. Un nuevo pedido en el hilo (por ejemplo después de que terminó) vuelve a pedir aprobación. `!repo` solo muestra para un compañero (fijarlo o borrarlo se rechaza), cambiar el repo de un trabajo en curso es de los dueños, y `!ayuda` y `!aparte` funcionan igual. Cualquier otra persona recibe el rechazo de siempre.
+
+Instrucciones privadas por DM. Un dueño le puede pedir a la sesión de un hilo que le escriba a alguien, sin que nadie en el hilo se entere de que se lo pidió. Mandale un DM a Alfred con el link de cualquier mensaje del hilo (copiá el link del mensaje; sirve el de una respuesta) y qué querés:
+
+```
+https://<ws>.slack.com/archives/C0…/p1791…  preguntale a @salva por qué guardó los permisos en la tabla de agentes
+https://<ws>.slack.com/archives/C0…/p1791…  avisale a @sebas que el PR está listo
+```
+
+- El bot retoma la sesión de Claude de ese hilo, en el mismo worktree, en solo lectura: no commitea, no pushea, no comenta en GitHub. Te contesta por DM `👌 voy con eso en <link del hilo>` y en el hilo no aparece nada: ni mensaje de arranque, ni reacciones, ni ⏳.
+- El worker escribe el mensaje con lo que sabe de su propio trabajo, en su voz, en castellano y corto (decisiones con `archivo:línea` o el link al PR), y el bot lo publica en el hilo tal cual. El mensaje no te menciona ni dice que alguien lo pidió. Las personas que nombrás (`@salva` escrito a mano o elegido de la lista) se resuelven en Slack y el mensaje las menciona.
+- Si es un aviso, te llega `✅ listo: <link al mensaje>`. Si es una pregunta, el bot espera la primera respuesta en el hilo de esa persona (o de un dueño), aunque no tenga acceso al bot y aunque responda mencionándolo. Con esa respuesta retoma la sesión otra vez, la toma como opinión y no como orden, no cambia código, y te manda por DM qué contestó, si cambia algo de lo que hizo y qué recomienda. Respuestas posteriores, o de otros, no hacen nada. Si nadie contesta en 24 h, te llega `⌛ salva no respondió en <link>`.
+- Una mención tuya en el hilo mientras espera corta la espera, como cualquier pedido nuevo. Otro DM tuyo para ese hilo también la corta y arranca la instrucción nueva.
+- Todo error (sin link, hilo sin trabajo, hilo trabajando, nombre que no existe en Slack, sesión que no se puede retomar, worker que falla) te llega por DM y en el hilo no pasa nada. Los DMs de cualquiera que no esté en `ALLOWED_SLACK_USERS` se ignoran sin respuesta.
 
 Repos que maneja. `ALFRED_REPOS` en `.env` (separados por coma, por nombre de repo o de Orca) limita los repos que lista `!repo`, los del menú **Cambiar repo** y entre los que deduce el repo cuando no lo nombrás. Un link explícito a otro repo se sigue tomando. Vacía, usa todos los repos de GitHub que tenga Orca.
 
@@ -62,9 +77,10 @@ node scripts/simulate.ts --repo-path /ruta/a/repo --follow-up "ahora arreglalo" 
 node scripts/simulate.ts --repo-path /ruta/a/repo "!plan Agregá un HELLO.md"
 node scripts/simulate.ts --repo-path /ruta/a/repo --attach captura.png "Leé la imagen adjunta y decime qué dice"
 node scripts/simulate.ts --repo-path /ruta/a/repo --as UTEAM "!pregunta ¿qué hace el README?"
+node scripts/simulate.ts --repo-path /ruta/a/repo --dm "preguntale a @salva si le parece bien" --reply-as USALVA --reply "dale" "!investiga ¿qué hay en la raíz?"
 ```
 
-Imprime lo que el bot publicaría y lee las respuestas a las preguntas por stdin. Los botones salen como líneas `:click <acción> <valor>`; pegar una por stdin la toca como `USIM` (`:click-as <usuario> …` para tocar como otro). `!repo …` corre una vez y guarda el repo del canal `SIM` en el `--state`. `--cancel-after <s>` manda `!parar` a los `s` segundos de arrancar el worker. `--as <usuario>` menciona y responde como otro usuario: `USIM` es el dueño, los IDs de `--teammates` (por defecto `UTEAM`) son compañeros cuyo pedido sale como `[slack → DM a USIM]` con sus botones, y cualquier otro recibe el rechazo. `--attach <archivo>` (repetible) adjunta un archivo local al pedido como si viniera de Slack; lo que el worker deja en su carpeta de salida sale como `[archivo] <nombre> (<bytes> bytes)` en vez de subirse.
+Imprime lo que el bot publicaría y lee las respuestas a las preguntas por stdin. Los botones salen como líneas `:click <acción> <valor>`; pegar una por stdin la toca como `USIM` (`:click-as <usuario> …` para tocar como otro). `!repo …` corre una vez y guarda el repo del canal `SIM` en el `--state`. `--cancel-after <s>` manda `!parar` a los `s` segundos de arrancar el worker. `--as <usuario>` menciona y responde como otro usuario: `USIM` es el dueño, los IDs de `--teammates` (por defecto `UTEAM`) son compañeros cuyo pedido sale como `[slack → DM a USIM]` con sus botones, y cualquier otro recibe el rechazo. `--attach <archivo>` (repetible) adjunta un archivo local al pedido como si viniera de Slack; lo que el worker deja en su carpeta de salida sale como `[archivo] <nombre> (<bytes> bytes)` en vez de subirse. `--dm "<texto>"`, cuando el trabajo terminó, le manda al bot como `USIM` un DM con el link del hilo y ese texto; `--reply "<texto>"` responde en el hilo como `--reply-as` (por defecto `USALVA`) si el bot quedó esperando esa respuesta. `--users <id=nombre,…>` es la lista de personas de Slack para resolver los `@nombre` (por defecto `USALVA=salva,USEBAS=sebas`).
 
 ## Escribir en el hilo desde cualquier sesión
 
@@ -78,7 +94,7 @@ node --env-file=.env scripts/thread.ts wait --from salva [--since <ts>] [--timeo
 
 Sin `--thread <canal>:<ts>`, el hilo es el del job de `data/state.json` cuyo worktree contiene el directorio actual. `post` convierte el Markdown a mrkdwn, menciona primero a los `--to` y parte en varios mensajes lo que no entra en uno. `wait` revisa el hilo cada 20 s y sale con código 2 si vence el timeout. El skill `skills/slack-thread` le explica a cualquier sesión cuándo y cómo usarlo; se instala con `ln -s /home/facu/orca/projects/slack-bot/skills/slack-thread ~/.claude/skills/slack-thread`.
 
-Lo que postea el CLI lo ignora el bot (descarta mensajes de bots), y una respuesta de alguien que no está en `ALLOWED_SLACK_USERS` no le llega a ningún worker.
+Lo que postea el CLI lo ignora el bot (descarta mensajes de bots), y una respuesta de alguien que no está en `ALLOWED_SLACK_USERS` no le llega a ningún worker, salvo la respuesta que espera una instrucción privada por DM.
 
 ## Cómo funciona
 
@@ -100,6 +116,13 @@ Un solo proceso Node. Al arrancar retoma la Run guardada con `orca orchestration
 
   done o cancelled + nueva mención en el hilo
       ──▶ starting (follow-up: retoma la sesión de Claude en el mismo worktree)
+
+  done o cancelled + DM de un dueño con el link del hilo
+      ──▶ relaying (escribe el mensaje) ──┬─ aviso, error o !parar ──▶ el done/cancelled de antes
+                                          └─ espera respuesta ──▶ awaiting_reply
+  awaiting_reply ── primera respuesta ──▶ relaying (resume la respuesta por DM) ──▶ el done/cancelled de antes
+                 ── 24 h ──────────────▶ el done/cancelled de antes
+                 ── mención o DM de un dueño ──▶ starting / relaying
 ```
 
 Cada corrida tiene un modo (`Job.mode`): `change` (la tarea común, termina en PR), `investigate` (`!investiga`, termina en un reporte sin PR) o `plan` (`!plan`, una `change` con una pregunta de aprobación antes de implementar). El modo cambia la spec del worker, el mensaje de arranque y el reporte final; los estados son los mismos. El plan lo escribe el worker en `data/reports/<hilo>.plan.md`; cuando llega una pregunta de un job en modo plan y ese archivo cambió desde la última vez, el bot lo publica antes de la pregunta. Va en un mensaje propio porque el mensaje de la pregunta se reescribe al responderla; así el plan aprobado queda en el hilo. Usa bloques de hasta 3000 caracteres en vez del corte de 3500 de los reportes, así que solo se recorta un plan de más de 39.000 caracteres.
