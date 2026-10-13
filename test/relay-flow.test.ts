@@ -329,3 +329,13 @@ test("a relay's statuses never reach the thread and its questions are answered w
   assert.ok(f.calls.some((c) => c.startsWith("reply q1 No human can answer")));
   assert.equal(f.store.data.jobs[ID].state.kind, "relaying");
 });
+
+test("a DM that mentions Alfred passes the instruction without the mention", async () => {
+  const f = setup();
+  f.deps.botUserId = "UALFRED";
+
+  await handleDm(f.deps, ownerDm("U1", `<@UALFRED> <${LINK}> preguntale a @salva si le parece bien`));
+
+  assert.deepEqual(f.calls, RESUME);
+  assert.doesNotMatch(f.specs[0], /UALFRED/);
+});

@@ -13,7 +13,7 @@ import { PLAN_OPTIONS, awaitsReply, dueRelayExpiries, isActive, isOtherTask, isR
 import type { Job, JobEvent, Mode, Person, RepoRef } from "./jobs.ts";
 import { worktreePath, worktreeSelector } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
-import { pullTarget } from "./parse.ts";
+import { pullTarget, stripMention } from "./parse.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { instructionOf, mentionedUsers, parseThreadLink } from "./relay.ts";
 import type { UnknownName } from "./relay.ts";
@@ -814,9 +814,10 @@ export async function handleDm(deps: BotDeps, dm: DirectMessage): Promise<void> 
   };
   const data = deps.store.data;
   const dmKey = `${dm.channel}:${dmThread}`;
-  const link = parseThreadLink(dm.text);
+  const text = stripMention(dm.text, deps.botUserId ?? "");
+  const link = parseThreadLink(text);
   const id = link ? jobId(link.channel, link.threadTs) : ((dm.threadTs && data.jobByDmThread[dmKey]) ?? data.lastThreadByOwner[dm.user]);
-  const instruction = link ? instructionOf(dm.text, link) : dm.text.trim();
+  const instruction = link ? instructionOf(text, link) : text.trim();
   if (!id || !instruction) return tell(RELAY_USAGE);
   await starting.get(id);
   const job = data.jobs[id];

@@ -76,7 +76,8 @@ export function registerMessages(app: bolt.App, deps: BotDeps, botUserId: string
 /** Mentions from people, never bots: a stranger is refused at once, anyone else's is resolved against the thread first. */
 export function registerMentions(app: bolt.App, deps: BotDeps, readThread: (channel: string, threadTs: string, exceptTs?: string) => Promise<ThreadMessage[]>): void {
   app.event("app_mention", async ({ event }) => {
-    if (!event.user || event.bot_id) return;
+    // A DM that mentions Alfred is handled once, as a direct message.
+    if (!event.user || event.bot_id || event.channel.startsWith("D")) return;
     const text = stripMention(event.text, deps.botUserId ?? "");
     const command = parseCommand(text);
     if (command?.name === "aparte") return;
