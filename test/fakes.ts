@@ -17,7 +17,7 @@ export function fakes(over: Partial<Orca> = {}) {
   const messages: { ts: string; text: string; blocks?: Block[] }[] = [];
   const updates: { ts: string; text: string; blocks?: Block[] }[] = [];
   const ephemerals: string[] = [];
-  const dms: { user: string; channel: string; ts: string; text: string; blocks?: Block[] }[] = [];
+  const dms: { user: string; channel: string; ts: string; text: string; blocks?: Block[]; threadTs?: string }[] = [];
   const uploads: string[] = [];
   const failUploads = new Set<string>();
   /** Bytes served for each Slack file URL; a missing URL is a 404. */
@@ -50,8 +50,8 @@ export function fakes(over: Partial<Orca> = {}) {
     async permalink(channel, ts) {
       return `https://slack.test/${channel}/${ts}`;
     },
-    async dm(user, text, blocks) {
-      const sent = { user, channel: `D-${user}`, ts: `700.${dms.length + 1}`, text, blocks };
+    async dm(user, text, blocks, threadTs) {
+      const sent = { user, channel: `D-${user}`, ts: `700.${dms.length + 1}`, text, blocks, ...(threadTs ? { threadTs } : {}) };
       dms.push(sent);
       return { channel: sent.channel, ts: sent.ts };
     },
@@ -133,6 +133,13 @@ export function fakes(over: Partial<Orca> = {}) {
       fetched.push(url);
       const served = slackFiles[url];
       return typeof served === "function" ? served() : (served ?? new Response("not found", { status: 404 }));
+    },
+    async users() {
+      return [
+        { id: "U1", name: "facu", displayName: "Facu", realName: "Facundo", isBot: false, deleted: false },
+        { id: "U0SALVA01", name: "salva", displayName: "Salva", realName: "Salvador", isBot: false, deleted: false },
+        { id: "U0SEBAS01", name: "sebas", displayName: "Sebas", realName: "Sebastián", isBot: false, deleted: false },
+      ];
     },
     async ask(o) {
       calls.push(`ask ${o.repoPath} ${o.question}${o.files?.length ? ` files=${o.files.map((f) => f.path).join(",")}` : ""}`);

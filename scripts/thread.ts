@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import bolt from "@slack/bolt";
+import { listUsers } from "../src/slack.ts";
 import { USAGE, UsageError, parseCommand, run, threadForCwd } from "../src/thread.ts";
-import type { SlackApi, SlackUser, StateJob, Thread, ThreadMsg } from "../src/thread.ts";
+import type { SlackApi, StateJob, Thread, ThreadMsg } from "../src/thread.ts";
 
 const STATE = join(import.meta.dirname, "..", "data", "state.json");
 
@@ -30,26 +31,7 @@ function slackApi(token: string): SlackApi {
   return {
     self: () =>
       (self ??= client.auth.test().then((auth) => ({ userId: auth.user_id as string, botId: auth.bot_id as string | undefined }))),
-    async users() {
-      const users: SlackUser[] = [];
-      let cursor: string | undefined;
-      do {
-        const page = await client.users.list({ limit: 200, cursor });
-        for (const u of page.members ?? []) {
-          if (!u.id) continue;
-          users.push({
-            id: u.id,
-            name: u.name ?? "",
-            displayName: u.profile?.display_name ?? "",
-            realName: u.real_name ?? u.profile?.real_name ?? "",
-            isBot: !!u.is_bot || u.id === "USLACKBOT",
-            deleted: !!u.deleted,
-          });
-        }
-        cursor = page.response_metadata?.next_cursor || undefined;
-      } while (cursor);
-      return users;
-    },
+    users: () => listUsers(client),
     async replies(thread) {
       const messages: ThreadMsg[] = [];
       let cursor: string | undefined;

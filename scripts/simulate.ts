@@ -4,7 +4,7 @@ import { basename, extname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { answerQuestion } from "../src/ask.ts";
-import { handleClick, handleMention, handleThreadReply } from "../src/bot.ts";
+import { handleClick, handleDm, handleMention, handleThreadReply } from "../src/bot.ts";
 import { parseCommand } from "../src/commands.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
 import { parseClick } from "../src/blocks.ts";
@@ -28,12 +28,16 @@ const { values, positionals } = parseArgs({
     attach: { type: "string", multiple: true },
     as: { type: "string", default: "USIM" },
     teammates: { type: "string", default: "UTEAM" },
+    dm: { type: "string", multiple: true },
+    "reply-as": { type: "string", default: "USALVA" },
+    reply: { type: "string" },
+    users: { type: "string", default: "USALVA=salva,USEBAS=sebas" },
   },
 });
 const request = positionals.join(" ").trim();
 if (!request) {
   console.error(
-    'usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... "<request text or !command>"',
+    'usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... [--dm "<owner DM>"]... [--reply-as <userId>] [--reply "<text>"] [--users <id=name,…>] "<request text or !command>"',
   );
   process.exit(2);
 }
@@ -92,9 +96,9 @@ const poster: Poster = {
     console.log(`[${ts()}] [slack permalink de ${channel}/${messageTs}] ${link}`);
     return link;
   },
-  async dm(user, text, blocks) {
+  async dm(user, text, blocks, threadTs) {
     const messageTs = nextTs();
-    console.log(`\n[${ts()}] [slack → DM a ${user}, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
+    console.log(`\n[${ts()}] [slack → DM a ${user}${threadTs ? ` en el hilo DM ${threadTs}` : ""}, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
     return { channel: `DSIM-${user}`, ts: messageTs };
   },
 };
@@ -139,7 +143,14 @@ const classify = typesafeKey
     }
   : undefined;
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify };
+/** The fake workspace an owner's DM names people from. */
+const people = [`${OWNER}=owner`, ...values.users!.split(",")].map((pair) => {
+  const [id, name] = pair.split("=").map((x) => x.trim());
+  return { id, name, displayName: name, realName: name, isBot: false, deleted: false };
+});
+const users = async () => people;
+
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify, users };
 const channel = "SIM";
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
 const target =
@@ -222,6 +233,27 @@ if (followUp && store.data.jobs[id].state.kind === "done") {
   await waitForClicks();
   await runInbox(inboxDeps, finished);
 }
+const dms = (values.dm ?? []).map((d) => d.trim()).filter(Boolean);
+const kind = () => store.data.jobs[id].state.kind;
+const relaying = () => kind() === "relaying";
+let firstDmTs: string | undefined;
+for (const [i, dm] of dms.entries()) {
+  if (kind() !== "done") break;
+  // Only the first DM carries the thread's link; the rest are written inside its DM thread.
+  const text = i === 0 ? `<${await poster.permalink(channel, threadTs)}> ${dm}` : dm;
+  const sent = { user: OWNER, text, channel: `DSIM-${OWNER}`, ts: nextTs(), threadTs: firstDmTs };
+  firstDmTs ??= sent.ts;
+  console.log(`[${ts()}] [usuario ${OWNER} → DM al bot, ts ${sent.ts}${sent.threadTs ? ` en el hilo DM ${sent.threadTs}` : ""}] ${text}`);
+  await handleDm(deps, sent);
+  await runInbox(inboxDeps, () => !relaying());
+  const reply = values.reply?.trim();
+  if (reply && kind() === "awaiting_reply") {
+    const replier = values["reply-as"]!;
+    console.log(`[${ts()}] [usuario ${replier} responde en hilo] ${reply}`);
+    await handleThreadReply(deps, { channel, threadTs, ts: nextTs(), user: replier, text: reply });
+    await runInbox(inboxDeps, () => !relaying());
+  }
+}
 console.log(`[${ts()}] estado final: ${JSON.stringify(store.data.jobs[id])}`);
 stdin.close();
-process.exit(["done", "cancelled"].includes(store.data.jobs[id].state.kind) ? 0 : 1);
+process.exit(["done", "cancelled", "awaiting_reply"].includes(store.data.jobs[id].state.kind) ? 0 : 1);

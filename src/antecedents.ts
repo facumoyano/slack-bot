@@ -1,4 +1,4 @@
-import { sameRepo } from "./jobs.ts";
+import { lastRun, sameRepo } from "./jobs.ts";
 import type { Job, Mode } from "./jobs.ts";
 
 export const MAX_ANTECEDENTS = 3;
@@ -7,7 +7,8 @@ export const MAX_ANTECEDENTS = 3;
 export type EarlierWork = { mode: Mode; outcome: string; prUrl?: string; summary?: string; permalink?: string };
 
 function prOf(job: Job): { owner: string; name: string; number: number } | undefined {
-  const url = job.state.kind === "done" ? job.state.prUrl : undefined;
+  const run = lastRun(job);
+  const url = run?.kind === "done" ? run.prUrl : undefined;
   const m = url && /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(url);
   return m ? { owner: m[1], name: m[2], number: Number(m[3]) } : undefined;
 }
@@ -30,9 +31,10 @@ export function findAntecedents(jobs: Iterable<Job>, target: { owner: string; na
 }
 
 export function outcomeLabel(job: Job): string {
-  switch (job.state.kind) {
+  const state = lastRun(job) ?? job.state;
+  switch (state.kind) {
     case "done":
-      return job.state.outcome === "succeeded" ? "terminado" : "falló";
+      return state.outcome === "succeeded" ? "terminado" : "falló";
     case "cancelled":
       return "cancelado";
     case "failed":
@@ -43,11 +45,12 @@ export function outcomeLabel(job: Job): string {
 }
 
 export function earlierWork(job: Job, permalink: string | undefined): EarlierWork {
+  const run = lastRun(job);
   return {
     mode: job.mode,
     outcome: outcomeLabel(job),
-    prUrl: job.state.kind === "done" ? job.state.prUrl : undefined,
-    summary: job.state.kind === "done" ? job.state.summary : undefined,
+    prUrl: run?.kind === "done" ? run.prUrl : undefined,
+    summary: run?.kind === "done" ? run.summary : undefined,
     permalink,
   };
 }

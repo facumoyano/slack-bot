@@ -1,3 +1,4 @@
+import { lastRun } from "./jobs.ts";
 import type { Job, Mode } from "./jobs.ts";
 
 /** What a plain mention (no `!command`) asks for: a worker mode, a quick `!pregunta` answer, or nothing. */
@@ -45,10 +46,16 @@ export type RouteState = {
   thread_context: string | null;
 };
 
+/** A relay is private, so the router sees the thread's own last run in its place. */
+function threadJob(job: Job): NonNullable<RouteState["thread_job"]> {
+  const state = lastRun(job) ?? job.state;
+  return { mode: job.mode, state: state.kind, pr: state.kind === "done" ? (state.prUrl ?? null) : null };
+}
+
 export function routeState(m: { text: string; context?: string }, job: Job | undefined): RouteState {
   return {
     mention: m.text,
-    thread_job: job ? { mode: job.mode, state: job.state.kind, pr: job.state.kind === "done" ? (job.state.prUrl ?? null) : null } : null,
+    thread_job: job ? threadJob(job) : null,
     mention_has_pr_link: /github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/.test(m.text),
     mention_has_issue_link: /github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+/.test(m.text),
     thread_context: m.context ? m.context.slice(-CONTEXT_MAX) : null,

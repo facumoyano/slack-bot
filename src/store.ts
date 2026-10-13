@@ -5,7 +5,7 @@ import type { Store } from "./jobs.ts";
 export type StoreHandle = { data: Store; save(): void };
 
 export function openStore(path: string): StoreHandle {
-  let data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {} };
+  let data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {}, lastThreadByOwner: {}, jobByDmThread: {} };
   try {
     data = JSON.parse(readFileSync(path, "utf8")) as Store;
   } catch (err) {
@@ -14,6 +14,8 @@ export function openStore(path: string): StoreHandle {
   data.channels ??= {};
   data.pendingRoutes ??= {};
   data.approvals ??= {};
+  data.lastThreadByOwner ??= {};
+  data.jobByDmThread ??= {};
   // Jobs saved before modes existed were all changes.
   for (const job of Object.values(data.jobs)) job.mode ??= "change";
   mkdirSync(dirname(path), { recursive: true });
@@ -28,6 +30,6 @@ export function openStore(path: string): StoreHandle {
   return handle;
 }
 
-export function memoryStore(data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {} }): StoreHandle {
+export function memoryStore(data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {}, lastThreadByOwner: {}, jobByDmThread: {} }): StoreHandle {
   return { data, save() {} };
 }
