@@ -96,9 +96,9 @@ const poster: Poster = {
     console.log(`[${ts()}] [slack permalink de ${channel}/${messageTs}] ${link}`);
     return link;
   },
-  async dm(user, text, blocks) {
+  async dm(user, text, blocks, threadTs) {
     const messageTs = nextTs();
-    console.log(`\n[${ts()}] [slack → DM a ${user}, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
+    console.log(`\n[${ts()}] [slack → DM a ${user}${threadTs ? ` en el hilo DM ${threadTs}` : ""}, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
     return { channel: `DSIM-${user}`, ts: messageTs };
   },
 };
@@ -236,12 +236,15 @@ if (followUp && store.data.jobs[id].state.kind === "done") {
 const dms = (values.dm ?? []).map((d) => d.trim()).filter(Boolean);
 const kind = () => store.data.jobs[id].state.kind;
 const relaying = () => kind() === "relaying";
+let firstDmTs: string | undefined;
 for (const [i, dm] of dms.entries()) {
   if (kind() !== "done") break;
-  // Only the first DM carries the thread's link; the rest continue the owner's last thread.
+  // Only the first DM carries the thread's link; the rest are written inside its DM thread.
   const text = i === 0 ? `<${await poster.permalink(channel, threadTs)}> ${dm}` : dm;
-  console.log(`[${ts()}] [usuario ${OWNER} → DM al bot] ${text}`);
-  await handleDm(deps, { user: OWNER, text });
+  const sent = { user: OWNER, text, channel: `DSIM-${OWNER}`, ts: nextTs(), threadTs: firstDmTs };
+  firstDmTs ??= sent.ts;
+  console.log(`[${ts()}] [usuario ${OWNER} → DM al bot, ts ${sent.ts}${sent.threadTs ? ` en el hilo DM ${sent.threadTs}` : ""}] ${text}`);
+  await handleDm(deps, sent);
   await runInbox(inboxDeps, () => !relaying());
   const reply = values.reply?.trim();
   if (reply && kind() === "awaiting_reply") {
