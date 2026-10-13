@@ -3,7 +3,8 @@ import { MESSAGE_MAX, doneMessage, planMessage, questionMessage } from "./blocks
 import type { Block, Message } from "./blocks.ts";
 import type { Approval } from "./approvals.ts";
 import type { Mention } from "./bot.ts";
-import { parseRelayMessage } from "./relay.ts";
+import { parseRelayFile } from "./relay.ts";
+import type { UnknownName } from "./relay.ts";
 import { slackPost } from "./report.ts";
 
 export type JobState =
@@ -30,7 +31,7 @@ export type Settled = { kind: "done"; outcome: "succeeded" | "failed"; summary: 
 export type Person = { id: string; name: string };
 
 /** An owner's private instruction for a thread, and the state the job returns to once it is carried out. */
-export type Relay = { owner: string; instruction: string; people: Person[]; link: string; after: Settled };
+export type Relay = { owner: string; instruction: string; people: Person[]; unknown: UnknownName[]; link: string; after: Settled };
 
 /** First the worker writes the thread message; then, if a reply came, a private digest of it for the owner. */
 export type RelayStep = { kind: "write" } | { kind: "digest"; from: Person; reply: string };
@@ -393,8 +394,9 @@ function relayOutcome(
       if (step.kind === "digest") {
         return { job: ended(sessionId), release, dm: { user: relay.owner, text: `💬 ${step.from.name} respondió ${where}:\n\n${slackPost(extras.relayFile)}` } };
       }
-      const parsed = parseRelayMessage(extras.relayFile, { people: relay.people.map((p) => p.id), owner: relay.owner });
+      const parsed = parseRelayFile(extras.relayFile, { people: relay.people.map((p) => p.id), unknown: relay.unknown, owner: relay.owner });
       if ("error" in parsed) return fail(parsed.error);
+      if (parsed.kind === "private") return { job: ended(sessionId), release, dm: { user: relay.owner, text: `💬 ${where}:\n\n${slackPost(parsed.text)}` } };
       return { job: { ...job, sessionId: sessionId ?? job.sessionId }, post: slackPost(parsed.text), release, relayPosted: { awaiting: parsed.awaiting } };
     }
     default:

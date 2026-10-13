@@ -79,7 +79,13 @@ test("a teammate's or a stranger's DM gets nothing at all", async () => {
 
 test("an owner's DM without a link, for an unknown thread, or for a busy one gets the matching DM and runs nothing", async () => {
   const f = setup();
-  f.deps.store.data.jobs["CRELAY:1791548003.000001"] = { ...doneJob(), id: "CRELAY:1791548003.000001", state: { kind: "working" }, dispatchId: "d9" };
+  f.deps.store.data.jobs["CRELAY:1791548003.000001"] = {
+    ...doneJob(),
+    id: "CRELAY:1791548003.000001",
+    slack: { channel: CHANNEL, threadTs: "1791548003.000001", requester: "U1" },
+    state: { kind: "working" },
+    dispatchId: "d9",
+  };
 
   await handleDm(f.deps, { user: "U1", text: "preguntale a @salva" });
   await handleDm(f.deps, { user: "U1", text: "https://acme.slack.com/archives/COTHER/p1791548002024869 preguntale a @salva" });
@@ -91,14 +97,33 @@ test("an owner's DM without a link, for an unknown thread, or for a busy one get
   assert.deepEqual([f.posts, f.calls], [[], []]);
 });
 
-test("a name nobody in Slack has is said by DM and nothing runs", async () => {
+test("a name nobody in Slack has still runs, and only a thread message for that person is refused, by DM", async () => {
   const f = setup();
 
-  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @zoe` });
+  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @zoe si le parece bien` });
+  assert.deepEqual(f.calls, RESUME, "the unknown name does not block the run");
+  assert.match(f.specs[0], /match nobody in Slack[^\n]*`zoe`/);
+  await workerWrites("await: @zoe\n\n@zoe ¿te parece bien?");
+  await processBatch(f.deps, [done("w-zoe")]);
 
-  assert.match(f.dms[0].text, /^❌ no encontré a "zoe" en Slack/);
-  assert.deepEqual([f.posts, f.calls], [[], []]);
-  assert.equal(f.store.data.jobs[ID].state.kind, "done");
+  assert.deepEqual(f.posts, []);
+  assert.match(f.dms.at(-1)!.text, new RegExp(`^❌ no pude escribir en ${THREAD_LINK}: no encontré a "zoe" en Slack`));
+  assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state);
+});
+
+test("an owner's private question gets a private answer by DM and the thread sees nothing", async () => {
+  const f = setup();
+
+  await handleDm(f.deps, { user: "U1", text: `${LINK} ¿por qué elegiste guardar los permisos en la tabla de agentes?` });
+  assert.match(f.specs[0], /PRIVATE INSTRUCTION[\s\S]*¿por qué elegiste guardar los permisos/);
+  await workerWrites("private\n\nPorque **src/perms.ts:12** los lee junto con el agente.");
+  await processBatch(f.deps, [done("w-private")]);
+
+  assert.deepEqual([f.posts, f.reactions], [[], []], "nothing in the thread");
+  assert.equal(f.dms.at(-1)!.text, `💬 en ${THREAD_LINK}:\n\nPorque *src/perms.ts:12* los lee junto con el agente.`);
+  assert.ok(f.calls.includes("release d3"));
+  assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state, "back to the thread's own finished run");
+  assert.ok(isResumable(f.store.data.jobs[ID]));
 });
 
 test("the first step's message goes to the thread exactly as written, and the wait for salva survives a restart", async () => {

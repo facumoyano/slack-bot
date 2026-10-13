@@ -31,24 +31,38 @@ export function mentionedUsers(text: string): string[] {
   return found;
 }
 
-/** What the worker's first step wrote: the exact thread message and whose reply it waits for. */
-export type RelayMessage = { text: string; awaiting: string[] };
+/** A name in the owner's DM that matched nobody in Slack, with the reason matching gave. */
+export type UnknownName = { name: string; why: string };
+
+/** What the worker's first step wrote: a message for the thread and whose reply it waits for, or a private answer to the owner. */
+export type RelayFile = { kind: "thread"; text: string; awaiting: string[] } | { kind: "private"; text: string };
+
+export type RelayFileRules = { people: readonly string[]; unknown: readonly UnknownName[]; owner: string };
+
+const TOKEN = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
 
 /**
- * The thread file is `await: <@U1> <@U2>` (or `await: none`), a blank line, then the message in Markdown.
- * Only the people the owner named may be awaited, and the message never names the owner.
+ * The relay file is a header line, a blank line, then Markdown. `private` heads an answer only the owner reads.
+ * `await: <@U1> <@U2>` (or `await: none`) heads the exact thread message, which may mention and await only the people
+ * the owner named, and never a name that matched nobody in Slack.
  */
-export function parseRelayMessage(raw: string, o: { people: readonly string[]; owner: string }): RelayMessage | { error: string } {
+export function parseRelayFile(raw: string, o: RelayFileRules): RelayFile | { error: string } {
   const [head, ...rest] = raw.replace(/^\s+/, "").split("\n");
-  const header = /^await:\s*(.*)$/i.exec(head.trim());
-  if (!header) return { error: "la primera línea del mensaje no es `await: …`" };
   const text = rest.join("\n").trim();
+  if (/^private$/i.test(head.trim())) return text ? { kind: "private", text } : { error: "la respuesta privada está vacía" };
+  const header = /^await:\s*(.*)$/i.exec(head.trim());
+  if (!header) return { error: "la primera línea no es `private` ni `await: …`" };
   if (!text) return { error: "el mensaje para el hilo está vacío" };
+  const named = mentionedUsers(raw).map((n) => n.toLowerCase());
+  const lost = o.unknown.find((u) => named.includes(u.name.toLowerCase()));
+  if (lost) return { error: lost.why };
   const value = header[1].trim();
-  const awaiting = /^(none|nadie)?$/i.test(value) ? [] : [...value.matchAll(/<@([UW][A-Z0-9]+)>|\b([UW][A-Z0-9]{8,})\b/g)].map((m) => m[1] ?? m[2]);
-  if (value && !/^(none|nadie)$/i.test(value) && !awaiting.length) return { error: `no entiendo a quién espera: \`${value}\`` };
-  const stranger = awaiting.find((id) => !o.people.includes(id));
-  if (stranger) return { error: `espera la respuesta de ${stranger}, que no nombraste` };
-  if (!o.people.includes(o.owner) && text.includes(`<@${o.owner}>`)) return { error: "el mensaje te menciona" };
-  return { text, awaiting: [...new Set(awaiting)] };
+  const none = /^(none|nadie)?$/i.test(value);
+  const awaiting = none ? [] : [...value.matchAll(/<@([UW][A-Z0-9]+)>|\b([UW][A-Z0-9]{8,})\b/g)].map((m) => m[1] ?? m[2]);
+  if (!none && !awaiting.length) return { error: `no entiendo a quién espera: \`${value}\`` };
+  const mentioned = [...text.matchAll(TOKEN)].map((m) => m[1]);
+  if (!o.people.includes(o.owner) && mentioned.includes(o.owner)) return { error: "el mensaje te menciona" };
+  const stranger = [...awaiting, ...mentioned].find((id) => !o.people.includes(id));
+  if (stranger) return { error: `${awaiting.includes(stranger) ? "espera la respuesta de" : "menciona a"} <@${stranger}>, que no nombraste` };
+  return { kind: "thread", text, awaiting: [...new Set(awaiting)] };
 }

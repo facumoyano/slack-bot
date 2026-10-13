@@ -16,6 +16,7 @@ import type { Orca, WorkerStart } from "./orca.ts";
 import { pullTarget } from "./parse.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { instructionOf, mentionedUsers, parseThreadLink } from "./relay.ts";
+import type { UnknownName } from "./relay.ts";
 import { clearReports, planPath, relayPath, reportPath, slackPost } from "./report.ts";
 import { BUTTON_LABELS, decideRoute, routeHint, routeState } from "./route.ts";
 import type { Decision as RouteDecision, RouteAnswer, RouteState } from "./route.ts";
@@ -818,27 +819,34 @@ export async function handleDm(deps: BotDeps, dm: DirectMessage): Promise<void> 
   if (!job) return tell("no tengo un trabajo en ese hilo");
   if (isActive(job)) return tell("ese hilo está trabajando ahora; mandámelo cuando termine");
   if (!isResumable(job) || !job.sessionId) return tell("no tengo una sesión que pueda retomar en ese hilo");
-  let people: Person[];
-  try {
-    people = await namedPeople(deps, instruction);
-  } catch (err) {
-    return tell(`❌ ${errorText(err)}`);
-  }
+  const named = await namedPeople(deps, instruction);
   const thread = await deps.poster.permalink(link.channel, link.threadTs).catch(() => link.url);
-  const next = commit(deps, job, { kind: "relay", relay: { owner: dm.user, instruction, people, link: thread } });
+  const next = commit(deps, job, { kind: "relay", relay: { owner: dm.user, instruction, ...named, link: thread } });
   if (!next) return;
   await tell(`👌 voy con eso en ${thread}`);
   await launchRelay(deps, next);
 }
 
-async function namedPeople(deps: BotDeps, instruction: string): Promise<Person[]> {
+/** A name that matches nobody is still passed on: it only matters if the worker would write to that person, which the relay file's parser refuses. */
+async function namedPeople(deps: BotDeps, instruction: string): Promise<{ people: Person[]; unknown: UnknownName[] }> {
   const queries = mentionedUsers(instruction);
-  if (!queries.length) return [];
-  const users = await deps.users();
-  return queries.map((q) => {
-    const user = matchUser(users, q);
-    return { id: user.id, name: userLabel(user) };
-  });
+  const people: Person[] = [];
+  const unknown: UnknownName[] = [];
+  if (!queries.length) return { people, unknown };
+  const users = await deps.users().catch((err: unknown) => errorText(err));
+  for (const q of queries) {
+    if (typeof users === "string") {
+      unknown.push({ name: q, why: `no pude buscar a "${q}" en Slack (${users})` });
+      continue;
+    }
+    try {
+      const user = matchUser(users, q);
+      people.push({ id: user.id, name: userLabel(user) });
+    } catch (err) {
+      unknown.push({ name: q, why: errorText(err) });
+    }
+  }
+  return { people, unknown };
 }
 
 /** Resumes the thread's own session for the relay's current step; a session that will not resume is the owner's to hear about, never the thread's. */
