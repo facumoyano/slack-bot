@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { doneMessage, planMessage, questionMessage } from "./blocks.ts";
 import type { Block, Message } from "./blocks.ts";
+import type { Approval } from "./approvals.ts";
 import type { Mention } from "./bot.ts";
 
 export type JobState =
@@ -65,6 +66,8 @@ export type Store = {
   channels: Record<string, RepoRef>;
   /** Per thread, the mention whose route the bot asked the human to pick, and the message holding the buttons. */
   pendingRoutes: Record<string, { ts: string; mention: Mention }>;
+  /** Teammates' requests by `approvalId`, pending or decided. */
+  approvals: Record<string, Approval>;
 };
 
 export type JobEvent =
@@ -75,7 +78,7 @@ export type JobEvent =
   | { kind: "answered" }
   | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
   | { kind: "cancelled"; sessionId?: string }
-  | { kind: "follow_up"; request: string; mode: Mode }
+  | { kind: "follow_up"; request: string; mode: Mode; requester: string }
   | { kind: "superseded"; reason: string };
 
 export function jobId(channel: string, threadTs: string): string {
@@ -152,6 +155,7 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       if (from !== "done" && from !== "cancelled") return undefined;
       return {
         ...job,
+        slack: { ...job.slack, requester: ev.requester },
         request: ev.request,
         mode: ev.mode,
         planHash: undefined,

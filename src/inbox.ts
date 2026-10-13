@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { outboxDir, outboxFiles, retire } from "./files.ts";
 import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
-import { retireStart, startsSettled } from "./bot.ts";
+import { expireApprovals, retireStart, startsSettled } from "./bot.ts";
 import { readPlan, readReport, slackPost, toSlackMrkdwn } from "./report.ts";
 import type { Poster } from "./bot.ts";
 import { worktreePath } from "./orca.ts";
@@ -127,6 +127,7 @@ export async function runInbox(deps: InboxDeps, shouldStop: () => boolean = () =
       ack = undefined;
       await startsSettled();
       await processBatch(deps, delivery.messages);
+      await expireApprovals(deps);
       if (delivery.messages.length && delivery.deliveryId) ack = delivery.deliveryId;
     } catch (err) {
       console.error("inbox error, retrying in 5s:", err);

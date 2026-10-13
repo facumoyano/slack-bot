@@ -157,7 +157,7 @@ test("clicking Investigar runs investigate with the original mention, for its re
   assert.equal(job.slack.requester, "U1");
   assert.match(f.specs[0], /Investigation playbook/);
   assert.equal(f.updates[0].ts, posted.ts);
-  assert.equal(f.updates[0].text, "¿Qué querés que haga?\n✅ <@U2> eligió: Investigar");
+  assert.equal(f.updates[0].text, "¿Qué querés que haga?\n✅ elegido: Investigar");
   assert.equal(buttonsOf(f.updates[0]).length, 0);
   assert.equal(f.posts.at(-1), "🔎 investigo en acme/api…", "a picked route needs no hint");
   assert.equal(f.asked.length, 1, "the click does not ask Jev again");

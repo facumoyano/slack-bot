@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import bolt from "@slack/bolt";
 import { ACTION_PREFIX, parseClick } from "./blocks.ts";
-import { handleClick, handleMention, handleThreadReply } from "./bot.ts";
+import { accessOf, handleClick, handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
 import { parseCommand } from "./commands.ts";
 import { messageFiles } from "./files.ts";
@@ -47,11 +47,56 @@ export function registerMessages(app: bolt.App, deps: BotDeps, botUserId: string
   app.event("message", async ({ event }) => {
     const msg = event as { subtype?: string; bot_id?: string; user?: string; text?: string; thread_ts?: string; ts: string; channel: string; files?: unknown[] };
     if ((msg.subtype && msg.subtype !== "file_share") || msg.bot_id || !msg.user || !msg.thread_ts || msg.thread_ts === msg.ts) return;
-    if (!deps.allowedUsers.has(msg.user)) return;
+    if (accessOf(deps, msg.user) === "stranger") return;
     if (msg.text?.includes(`<@${botUserId}>`)) return;
     handleThreadReply(deps, { channel: msg.channel, threadTs: msg.thread_ts, ts: msg.ts, user: msg.user, text: msg.text ?? "", files: msg.files }).catch((err) =>
       console.error("thread reply failed:", err),
     );
+  });
+}
+
+/** Mentions from people, never bots: a stranger is refused at once, anyone else's is resolved against the thread first. */
+export function registerMentions(app: bolt.App, deps: BotDeps, readThread: (channel: string, threadTs: string, exceptTs?: string) => Promise<ThreadMessage[]>): void {
+  app.event("app_mention", async ({ event }) => {
+    if (!event.user || event.bot_id) return;
+    const text = stripMention(event.text, deps.botUserId ?? "");
+    const command = parseCommand(text);
+    if (command?.name === "aparte") return;
+    const threadTs = event.thread_ts ?? event.ts;
+    const where = { slack: { channel: event.channel, threadTs, requester: event.user } };
+    const request = command ? command.rest : text;
+    const mention = { channel: event.channel, threadTs, ts: event.ts, user: event.user, text: request, command: command?.name };
+    const work = async () => {
+      const quick = command?.name === "parar" || command?.name === "ayuda" || command?.name === "repo";
+      if (quick || accessOf(deps, mention.user) === "stranger") return handleMention(deps, mention);
+      const thread = event.thread_ts ? await readThread(event.channel, event.thread_ts, event.ts) : [];
+      const ownTexts = messageTexts({ ...event, text: request });
+      const threadTexts = thread.flatMap((m) => m.texts);
+      const all = [...ownTexts, ...threadTexts];
+      const repos = await deps.knownRepos().catch((err) => {
+        console.error("listing known repos failed:", err);
+        return [];
+      });
+      const ownTarget = findTarget(ownTexts, repos);
+      const target = await chooseTarget({
+        own: ownTexts,
+        thread: threadTexts,
+        repos,
+        channelRepo: deps.store.data.channels[event.channel],
+        separate: command?.name === "nuevo",
+        infer: () =>
+          resolveWithClaude(all, repos).catch((err) => {
+            console.error("claude repo resolution failed:", err);
+            return undefined;
+          }),
+      });
+      const files = messageFiles([event as { files?: unknown }, ...thread]);
+      await handleMention(deps, { ...mention, context: contextOf(thread), target, ownTarget, files });
+    };
+    work().catch(async (err) => {
+      console.error("app_mention failed:", err);
+      await deps.poster.postToThread(where, `❌ algo falló: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+    });
   });
 }
 
@@ -87,6 +132,14 @@ export function createSlack(config: SlackConfig) {
       if (!res.permalink) throw new Error("chat.getPermalink returned no permalink");
       return res.permalink;
     },
+    async dm(user, text, blocks) {
+      const open = await app.client.conversations.open({ users: user });
+      const channel = open.channel?.id;
+      if (!channel) throw new Error("conversations.open returned no channel");
+      const res = await app.client.chat.postMessage({ channel, text, blocks });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      return { channel, ts: res.ts };
+    },
   };
   const fetchFile = (url: string) => fetch(url, { headers: { Authorization: `Bearer ${config.botToken}` } });
 
@@ -108,54 +161,7 @@ export function createSlack(config: SlackConfig) {
         }));
     }
 
-    app.event("app_mention", async ({ event }) => {
-      if (!event.user || event.bot_id) return;
-      const text = stripMention(event.text, botUserId);
-      const command = parseCommand(text);
-      if (command?.name === "aparte") return;
-      const threadTs = event.thread_ts ?? event.ts;
-      const where = { slack: { channel: event.channel, threadTs, requester: event.user } };
-      if (!deps.allowedUsers.has(event.user)) {
-        await poster.postToThread(
-          where,
-          `Perdón <@${event.user}>, no tengo permiso para trabajar para vos. Pedile al dueño del bot que agregue tu ID \`${event.user}\` a ALLOWED_SLACK_USERS.`,
-        );
-        return;
-      }
-      const request = command ? command.rest : text;
-      const mention = { channel: event.channel, threadTs, ts: event.ts, user: event.user, text: request, command: command?.name };
-      const work = async () => {
-        if (command?.name === "parar" || command?.name === "ayuda" || command?.name === "repo") return handleMention(full, mention);
-        const thread = event.thread_ts ? await readThread(event.channel, event.thread_ts, event.ts) : [];
-        const ownTexts = messageTexts({ ...event, text: request });
-        const threadTexts = thread.flatMap((m) => m.texts);
-        const all = [...ownTexts, ...threadTexts];
-        const repos = await deps.knownRepos().catch((err) => {
-          console.error("listing known repos failed:", err);
-          return [];
-        });
-        const ownTarget = findTarget(ownTexts, repos);
-        const target = await chooseTarget({
-          own: ownTexts,
-          thread: threadTexts,
-          repos,
-          channelRepo: deps.store.data.channels[event.channel],
-          separate: command?.name === "nuevo",
-          infer: () =>
-            resolveWithClaude(all, repos).catch((err) => {
-              console.error("claude repo resolution failed:", err);
-              return undefined;
-            }),
-        });
-        const files = messageFiles([event as { files?: unknown }, ...thread]);
-        await handleMention(full, { ...mention, context: contextOf(thread), target, ownTarget, files });
-      };
-      work().catch(async (err) => {
-        console.error("app_mention failed:", err);
-        await poster.postToThread(where, `❌ algo falló: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
-      });
-    });
-
+    registerMentions(app, full, readThread);
     registerMessages(app, full, botUserId);
     registerActions(app, full, (channel, threadTs) => readThread(channel, threadTs));
 

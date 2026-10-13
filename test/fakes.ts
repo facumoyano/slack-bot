@@ -17,6 +17,7 @@ export function fakes(over: Partial<Orca> = {}) {
   const messages: { ts: string; text: string; blocks?: Block[] }[] = [];
   const updates: { ts: string; text: string; blocks?: Block[] }[] = [];
   const ephemerals: string[] = [];
+  const dms: { user: string; channel: string; ts: string; text: string; blocks?: Block[] }[] = [];
   const uploads: string[] = [];
   const failUploads = new Set<string>();
   /** Bytes served for each Slack file URL; a missing URL is a 404. */
@@ -48,6 +49,11 @@ export function fakes(over: Partial<Orca> = {}) {
     },
     async permalink(channel, ts) {
       return `https://slack.test/${channel}/${ts}`;
+    },
+    async dm(user, text, blocks) {
+      const sent = { user, channel: `D-${user}`, ts: `700.${dms.length + 1}`, text, blocks };
+      dms.push(sent);
+      return { channel: sent.channel, ts: sent.ts };
     },
   };
   const orca: Orca = {
@@ -114,6 +120,7 @@ export function fakes(over: Partial<Orca> = {}) {
     store,
     resolveRepo: async () => "r1",
     allowedUsers: new Set(["U1", "U2"]),
+    approvalUsers: new Set(["T1", "T2"]),
     knownRepos: async () => [
       { owner: "acme", name: "api" },
       { owner: "acme", name: "web" },
@@ -132,7 +139,7 @@ export function fakes(over: Partial<Orca> = {}) {
       return "## Respuesta\nSe valida en **src/webhook.ts:12**.";
     },
   };
-  return { posts, messages, updates, ephemerals, reactions, calls, specs, store, deps, sessions, clock, uploads, failUploads, slackFiles, fetched };
+  return { posts, messages, updates, ephemerals, dms, reactions, calls, specs, store, deps, sessions, clock, uploads, failUploads, slackFiles, fetched };
 }
 
 export function workingJob(): Job {
