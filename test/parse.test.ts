@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chooseTarget, findTarget, messageTexts, parseTarget, pullTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
+import { chooseTarget, limitRepos, findTarget, messageTexts, parseTarget, pullTarget, stripMention, matchKnownRepo } from "../src/parse.ts";
 
 test("issue URL wrapped as a Slack link", () => {
   assert.deepEqual(parseTarget(["mirá <https://github.com/acme/web-app/issues/42|acme/web-app#42 Login roto>"]), {
@@ -143,4 +143,17 @@ test("a review's PR: a bare #n names it on the target's repo, else the target's 
   assert.deepEqual(pullTarget(short, "acme/api#7"), { ...short, issue: { number: 7, url: "https://github.com/acme/api/pull/7" } });
   assert.equal(pullTarget(repo, "revisá el PR"), undefined);
   assert.equal(pullTarget(repo, "el issue#3 no cuenta"), undefined, "a # glued to a word is not a PR number");
+});
+
+test("limitRepos keeps only the allowed repos, by repo name, owner/name or Orca display name", () => {
+  const repos = [
+    { owner: "fyso-dev", name: "fyso_backend", displayName: "fyso-backend" },
+    { owner: "fyso-dev", name: "fyso-business" },
+    { owner: "acme", name: "opensource-ingest" },
+    { owner: "facumoyano", name: "slack-bot" },
+    { owner: "local", name: "slackbot-scratch" },
+  ];
+  const names = (rs: { name: string }[]) => rs.map((r) => r.name);
+  assert.deepEqual(names(limitRepos(repos, ["fyso-backend", "fyso-business", "acme/opensource-ingest"])), ["fyso_backend", "fyso-business", "opensource-ingest"]);
+  assert.deepEqual(names(limitRepos(repos, [])), names(repos));
 });

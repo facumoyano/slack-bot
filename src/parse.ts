@@ -54,6 +54,13 @@ function norm(text: string): string {
   return text.toLowerCase().replaceAll("_", "-");
 }
 
+/** The repos Alfred lists and infers from: those named in `allowed` (by repo or Orca display name), or all when it is empty. */
+export function limitRepos(repos: readonly KnownRepo[], allowed: readonly string[]): KnownRepo[] {
+  if (!allowed.length) return [...repos];
+  const wanted = new Set(allowed.map(norm));
+  return repos.filter((r) => wanted.has(norm(r.name)) || wanted.has(norm(`${r.owner}/${r.name}`)) || (r.displayName !== undefined && wanted.has(norm(r.displayName))));
+}
+
 /** Bare repo names ("fyso-backend") resolved against repos Orca already has; `-` and `_` count as equal. */
 export function matchKnownRepo(texts: readonly string[], repos: readonly KnownRepo[]): GithubTarget | undefined {
   for (const text of texts) {
