@@ -28,7 +28,7 @@ const { values, positionals } = parseArgs({
     attach: { type: "string", multiple: true },
     as: { type: "string", default: "USIM" },
     teammates: { type: "string", default: "UTEAM" },
-    dm: { type: "string" },
+    dm: { type: "string", multiple: true },
     "reply-as": { type: "string", default: "USALVA" },
     reply: { type: "string" },
     users: { type: "string", default: "USALVA=salva,USEBAS=sebas" },
@@ -37,7 +37,7 @@ const { values, positionals } = parseArgs({
 const request = positionals.join(" ").trim();
 if (!request) {
   console.error(
-    'usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... [--dm "<owner DM after the link>" [--reply-as <userId>] [--reply "<text>"]] [--users <id=name,…>] "<request text or !command>"',
+    'usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... [--dm "<owner DM>"]... [--reply-as <userId>] [--reply "<text>"] [--users <id=name,…>] "<request text or !command>"',
   );
   process.exit(2);
 }
@@ -233,11 +233,13 @@ if (followUp && store.data.jobs[id].state.kind === "done") {
   await waitForClicks();
   await runInbox(inboxDeps, finished);
 }
-const dm = values.dm?.trim();
-if (dm && store.data.jobs[id].state.kind === "done") {
-  const kind = () => store.data.jobs[id].state.kind;
-  const relaying = () => kind() === "relaying";
-  const text = `<${await poster.permalink(channel, threadTs)}> ${dm}`;
+const dms = (values.dm ?? []).map((d) => d.trim()).filter(Boolean);
+const kind = () => store.data.jobs[id].state.kind;
+const relaying = () => kind() === "relaying";
+for (const [i, dm] of dms.entries()) {
+  if (kind() !== "done") break;
+  // Only the first DM carries the thread's link; the rest continue the owner's last thread.
+  const text = i === 0 ? `<${await poster.permalink(channel, threadTs)}> ${dm}` : dm;
   console.log(`[${ts()}] [usuario ${OWNER} → DM al bot] ${text}`);
   await handleDm(deps, { user: OWNER, text });
   await runInbox(inboxDeps, () => !relaying());
