@@ -1,6 +1,6 @@
 import type { EarlierWork } from "./antecedents.ts";
 import type { LocalFile } from "./files.ts";
-import { PLAN_OPTIONS, isReadOnly } from "./jobs.ts";
+import { PLAN_OPTIONS, isReadOnly, targetLabel } from "./jobs.ts";
 import type { Job, Mode, Relay, RelayStep } from "./jobs.ts";
 
 export type SpecInput = {
@@ -32,7 +32,7 @@ export function untrusted(label: string, text: string): string {
 }
 
 export function taskTitle(job: Pick<Job, "repo" | "issue" | "request">): string {
-  if (job.issue) return `${job.repo.owner}/${job.repo.name}#${job.issue.number}`;
+  if (job.issue && job.repo.kind !== "dir") return `${job.repo.owner}/${job.repo.name}#${job.issue.number}`;
   const first = job.request.split("\n")[0].slice(0, 60);
   return `${job.repo.name}: ${first}`;
 }
@@ -201,7 +201,7 @@ function acceptance(input: SpecInput, slug: string, closes: string): string[] {
 
 export function buildSpec(input: SpecInput): string {
   const { job } = input;
-  const slug = `${job.repo.owner}/${job.repo.name}`;
+  const slug = targetLabel(job.repo);
   const issue = job.issue;
   const isPull = issue?.url.includes("/pull/");
   const readIssue = issue
@@ -278,7 +278,7 @@ function relayPeople(relay: Pick<Relay, "people" | "unknown">): string[] {
 /** The resumed session's spec for an owner's private instruction: a private answer, or a thread message and then a digest of its reply. */
 export function buildRelaySpec(input: RelaySpecInput): string {
   const { relay, step, relayPath } = input;
-  const slug = `${input.job.repo.owner}/${input.job.repo.name}`;
+  const slug = targetLabel(input.job.repo);
   const intro = [
     "## Method",
     RELAY_METHOD,

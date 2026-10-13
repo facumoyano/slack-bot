@@ -23,7 +23,7 @@ export type InboxDeps = {
 async function prFallback(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
   if (msg.type !== "worker_done" || extractPrUrl(msg.body ?? "")) return undefined;
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
-  if (!job?.worktreeId) return undefined;
+  if (!job?.worktreeId || job.repo.kind === "dir") return undefined;
   return deps.orca.lookupPrUrl(job.worktreeId, job.repo.owner, job.repo.name);
 }
 

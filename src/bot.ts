@@ -462,6 +462,7 @@ async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: strin
 
 /** Tells the thread, and returns for the spec, which other threads already worked on this job's issue or PR. */
 async function announceAntecedents(deps: BotDeps, job: Job): Promise<EarlierWork[]> {
+  if (job.repo.kind === "dir") return [];
   const found = findAntecedents(Object.values(deps.store.data.jobs), { ...job.repo, issue: job.issue }, job.id);
   if (!found.length) return [];
   const earlier = await Promise.all(

@@ -44,6 +44,17 @@ export type RepoSource = "link" | "name" | "channel" | "inferred";
 
 export type RepoRef = { owner: string; name: string };
 
+/** A GitHub repo: each thread gets its own worktree and branch. `kind` is absent on jobs saved before local directories existed. */
+export type GithubRepo = { kind?: "github"; owner: string; name: string; orcaRepoId: string };
+
+/** A local directory with no remote, bound to a channel by `ALFRED_DIRS`: workers edit it in place, one job at a time. */
+export type LocalDir = { name: string; path: string };
+
+export type DirRepo = LocalDir & { kind: "dir"; orcaRepoId: string };
+
+/** Where a job's workers run. */
+export type Workspace = GithubRepo | DirRepo;
+
 /** What a worker run delivers: a PR, a cited report with no PR, a PR after the human approves a plan, or a read-only review of an existing PR. */
 export type Mode = "change" | "investigate" | "plan" | "review";
 
@@ -58,7 +69,7 @@ export const PLAN_OPTIONS = { approve: "Aprobar", change: "Cambiar" } as const;
 export type Job = {
   id: string;
   slack: { channel: string; threadTs: string; requester: string };
-  repo: { owner: string; name: string; orcaRepoId: string };
+  repo: Workspace;
   repoSource?: RepoSource;
   issue?: { number: number; url: string };
   request: string;
@@ -122,12 +133,14 @@ export function jobLabel(job: Pick<Job, "repo" | "issue">): string {
   return targetLabel({ ...job.repo, issue: job.issue });
 }
 
-export function targetLabel(t: { owner: string; name: string; issue?: { number: number } }): string {
+export function targetLabel(t: ({ kind?: "github"; owner: string; name: string } | { kind: "dir"; name: string }) & { issue?: { number: number } }): string {
+  if (t.kind === "dir") return t.name;
   return t.issue ? `${t.owner}/${t.name}#${t.issue.number}` : `${t.owner}/${t.name}`;
 }
 
-export function sameRepo(job: Pick<Job, "repo">, t: { owner: string; name: string }): boolean {
-  return job.repo.owner.toLowerCase() === t.owner.toLowerCase() && job.repo.name.toLowerCase() === t.name.toLowerCase();
+export function sameRepo(job: { repo: { kind?: Workspace["kind"]; owner?: string; name: string } }, t: RepoRef): boolean {
+  const r = job.repo;
+  return r.kind !== "dir" && r.owner?.toLowerCase() === t.owner.toLowerCase() && r.name.toLowerCase() === t.name.toLowerCase();
 }
 
 /** A target that is not this job's work: another repo, or an issue other than the job's. */
