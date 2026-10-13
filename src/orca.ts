@@ -79,20 +79,29 @@ export async function startWorker(opts: { repoId: string; name: string; title: s
   return workerStart(result);
 }
 
-export async function startFollowUp(opts: { worktreeId: string; title: string; spec: string }): Promise<WorkerStart> {
+/**
+ * The Orca selector of an existing worktree. By path, because Orca's worktree id embeds the repo id,
+ * which changes when the repo is removed and re-added; a stored `id:` selector would then match nothing.
+ */
+export function worktreeSelector(worktreeId: string): string {
+  return `path:${worktreePath(worktreeId)}`;
+}
+
+/** `worktree` is a selector from `worktreeSelector`. */
+export async function startFollowUp(opts: { worktree: string; title: string; spec: string }): Promise<WorkerStart> {
   const result = await orca([
     "orchestration", "worker-start",
     "--spec", opts.spec,
     "--task-title", opts.title,
-    "--worktree", `id:${opts.worktreeId}`,
+    "--worktree", opts.worktree,
     ...WORKER_COMMON,
   ]);
-  return { ...workerStart(result), worktreeId: opts.worktreeId };
+  return workerStart(result);
 }
 
 /** A visible terminal in an existing worktree running `command`; returns its handle. */
-export async function createTerminal(opts: { worktreeId: string; title: string; command: string }): Promise<string> {
-  const result = await orca(["terminal", "create", "--worktree", `id:${opts.worktreeId}`, "--title", opts.title, "--command", opts.command]);
+export async function createTerminal(opts: { worktree: string; title: string; command: string }): Promise<string> {
+  const result = await orca(["terminal", "create", "--worktree", opts.worktree, "--title", opts.title, "--command", opts.command]);
   const handle = result.terminal?.handle;
   if (typeof handle !== "string") throw new OrcaError("bad_output", `terminal create returned no handle: ${JSON.stringify(result)}`);
   return handle;
@@ -116,16 +125,16 @@ export async function closeTerminal(handle: string): Promise<void> {
 }
 
 /** Hands a task to an agent already running in `handle`; Orca rejects --agent and creation flags here. */
-export async function startWorkerInTerminal(opts: { worktreeId: string; handle: string; title: string; spec: string }): Promise<WorkerStart> {
+export async function startWorkerInTerminal(opts: { worktree: string; handle: string; title: string; spec: string }): Promise<WorkerStart> {
   const result = await orca([
     "orchestration", "worker-start",
     "--spec", opts.spec,
     "--task-title", opts.title,
-    "--worktree", `id:${opts.worktreeId}`,
+    "--worktree", opts.worktree,
     "--terminal", opts.handle,
     "--timeout-ms", "600000",
   ]);
-  return { ...workerStart(result), worktreeId: opts.worktreeId };
+  return workerStart(result);
 }
 
 /** Succeeds only when Orca's receipt says the dispatch is stopped; a repeat stop reports `stopped` with `alreadySettled`. */

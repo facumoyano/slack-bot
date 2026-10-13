@@ -58,7 +58,7 @@ test("a plain mention after an investigation resumes the same session as a chang
   const job = f.store.data.jobs["C1:100.1"];
   assert.equal(job.mode, "change");
   assert.equal(job.request, "ahora arreglalo");
-  assert.ok(f.calls.includes("terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1"), "resumes the investigation's session");
+  assert.ok(f.calls.includes("terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1"), "resumes the investigation's session");
   assert.equal(f.posts.at(-1), "🫡 sigo en la misma sesión. Te aviso por acá.");
   const spec = f.specs.at(-1)!;
   assert.match(spec, /continuing your own previous work/);

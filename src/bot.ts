@@ -7,7 +7,7 @@ import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownT
 import type { LocalFile } from "./files.ts";
 import { PLAN_OPTIONS, isActive, isOtherTask, isResumable, jobId, jobLabel, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent, Mode, RepoRef } from "./jobs.ts";
-import { worktreePath } from "./orca.ts";
+import { worktreePath, worktreeSelector } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { clearReports, planPath, reportPath, slackPost } from "./report.ts";
@@ -284,7 +284,7 @@ const CANCELLED_SUMMARY = "The user cancelled the previous worker before it fini
 async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode): Promise<void> {
   if (!isResumable(job) || !job.worktreeId) return;
   const previous = job.state.kind === "done" ? job.state : { summary: CANCELLED_SUMMARY, prUrl: undefined };
-  const worktreeId = job.worktreeId;
+  const worktree = worktreeSelector(job.worktreeId);
   const next = commit(deps, job, { kind: "follow_up", request: m.text, mode });
   if (!next) return;
   await deps.poster.react(m.channel, m.ts, "saluting_face");
@@ -301,7 +301,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode): P
     if (next.sessionId) {
       try {
         const spec = buildSpec({ job: next, resumed: true, previousPrUrl: previous.prUrl, ...paths });
-        const started = await resumeSession(deps, { worktreeId, sessionId: next.sessionId, title, spec });
+        const started = await resumeSession(deps, { worktree, sessionId: next.sessionId, title, spec });
         console.log(`follow-up ${next.id}: resumed Claude session ${next.sessionId}`);
         return started;
       } catch (err) {
@@ -311,7 +311,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode): P
     console.log(`follow-up ${next.id}: fresh worker`);
     await deps.poster.postToThread(next, FRESH_FOLLOW_UP).catch(() => {});
     return deps.orca.startFollowUp({
-      worktreeId,
+      worktree,
       title,
       spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl, ...paths }),
     });
@@ -321,10 +321,10 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode): P
 /** Reopens the previous worker's Claude session in the worktree and hands it the follow-up as a supervised worker. */
 async function resumeSession(
   deps: BotDeps,
-  opts: { worktreeId: string; sessionId: string; title: string; spec: string },
+  opts: { worktree: string; sessionId: string; title: string; spec: string },
 ): Promise<WorkerStart> {
   const handle = await deps.orca.createTerminal({
-    worktreeId: opts.worktreeId,
+    worktree: opts.worktree,
     title: slug(opts.title),
     command: `claude --dangerously-skip-permissions --resume ${opts.sessionId}`,
   });
@@ -332,7 +332,7 @@ async function resumeSession(
     // A long session can take more than a minute to load; one longer retry before giving up.
     const idle = (await deps.orca.waitTuiIdle(handle, 60_000)) || (await deps.orca.waitTuiIdle(handle, 120_000));
     if (!idle) throw new Error(`resumed Claude in ${handle} never became idle`);
-    return await deps.orca.startWorkerInTerminal({ worktreeId: opts.worktreeId, handle, title: opts.title, spec: opts.spec });
+    return await deps.orca.startWorkerInTerminal({ worktree: opts.worktree, handle, title: opts.title, spec: opts.spec });
   } catch (err) {
     await deps.orca.closeTerminal(handle).catch((closeErr) => console.error(`closing terminal ${handle} failed:`, closeErr));
     throw err;
