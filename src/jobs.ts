@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { doneMessage, planMessage, questionMessage } from "./blocks.ts";
+import { MESSAGE_MAX, doneMessage, planMessage, questionMessage } from "./blocks.ts";
 import type { Block, Message } from "./blocks.ts";
 import type { Approval } from "./approvals.ts";
 import type { Mention } from "./bot.ts";
@@ -197,11 +197,9 @@ export function extractPrUrl(text: string): string | undefined {
   return PR_URL.exec(text)?.[0];
 }
 
-const MAX_SUMMARY = 3000;
-
 function summaryOf(msg: InboxMessage): string {
   const body = (msg.body ?? msg.subject ?? "").replace(/^\s*PR:\s*\S+\s*$/gm, "").trim();
-  return body.length > MAX_SUMMARY ? `${body.slice(0, MAX_SUMMARY)}…` : body;
+  return body.length > MESSAGE_MAX ? `${body.slice(0, MESSAGE_MAX)}…` : body;
 }
 
 /** `lead` is posted before `post`, as its own message. */
