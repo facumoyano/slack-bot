@@ -27,7 +27,7 @@ function orcaWithNewRepoId() {
       reject(o.worktree);
       return { taskId: "t3", dispatchId: "d3" };
     },
-    async startFollowUp(o) {
+    async startInWorktree(o) {
       reject(o.worktree);
       return { taskId: "t2", dispatchId: "d2" };
     },

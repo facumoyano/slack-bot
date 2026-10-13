@@ -44,6 +44,17 @@ export type RepoSource = "link" | "name" | "channel" | "inferred";
 
 export type RepoRef = { owner: string; name: string };
 
+/** A GitHub repo: each thread gets its own worktree and branch. `kind` is absent on jobs saved before local directories existed. */
+export type GithubRepo = { kind?: "github"; owner: string; name: string; orcaRepoId: string };
+
+/** A local directory with no remote, bound to a channel by `ALFRED_DIRS`: workers edit it in place, one job at a time. */
+export type LocalDir = { name: string; path: string };
+
+export type DirRepo = LocalDir & { kind: "dir"; orcaRepoId: string };
+
+/** Where a job's workers run. */
+export type Workspace = GithubRepo | DirRepo;
+
 /** What a worker run delivers: a PR, a cited report with no PR, a PR after the human approves a plan, or a read-only review of an existing PR. */
 export type Mode = "change" | "investigate" | "plan" | "review";
 
@@ -58,7 +69,7 @@ export const PLAN_OPTIONS = { approve: "Aprobar", change: "Cambiar" } as const;
 export type Job = {
   id: string;
   slack: { channel: string; threadTs: string; requester: string };
-  repo: { owner: string; name: string; orcaRepoId: string };
+  repo: Workspace;
   repoSource?: RepoSource;
   issue?: { number: number; url: string };
   request: string;
@@ -71,6 +82,8 @@ export type Job = {
   dispatchId?: string;
   /** The last worker's Claude session, resumed by the next follow-up. */
   sessionId?: string;
+  /** A local directory's HEAD when the current run started, so its done post lists the files the run committed. */
+  runBase?: string;
   /** The message announcing the current worker, whose buttons are retired when the job leaves the active states. */
   startMsg?: { ts: string; text: string };
   /** Last ⏳ post time (ms) and the newest status held back because it came too soon after it. */
@@ -95,7 +108,7 @@ export type Store = {
 };
 
 export type JobEvent =
-  | { kind: "started"; worktreeId: string; taskId: string; dispatchId: string }
+  | { kind: "started"; worktreeId: string; taskId: string; dispatchId: string; base?: string }
   | { kind: "start_failed"; error: string }
   | { kind: "question"; msgId: string; question: string; options: string[] }
   | { kind: "question_posted"; msgId: string; ts: string }
@@ -122,12 +135,14 @@ export function jobLabel(job: Pick<Job, "repo" | "issue">): string {
   return targetLabel({ ...job.repo, issue: job.issue });
 }
 
-export function targetLabel(t: { owner: string; name: string; issue?: { number: number } }): string {
+export function targetLabel(t: ({ kind?: "github"; owner: string; name: string } | { kind: "dir"; name: string }) & { issue?: { number: number } }): string {
+  if (t.kind === "dir") return t.name;
   return t.issue ? `${t.owner}/${t.name}#${t.issue.number}` : `${t.owner}/${t.name}`;
 }
 
-export function sameRepo(job: Pick<Job, "repo">, t: { owner: string; name: string }): boolean {
-  return job.repo.owner.toLowerCase() === t.owner.toLowerCase() && job.repo.name.toLowerCase() === t.name.toLowerCase();
+export function sameRepo(job: { repo: { kind?: Workspace["kind"]; owner?: string; name: string } }, t: RepoRef): boolean {
+  const r = job.repo;
+  return r.kind !== "dir" && r.owner?.toLowerCase() === t.owner.toLowerCase() && r.name.toLowerCase() === t.name.toLowerCase();
 }
 
 /** A target that is not this job's work: another repo, or an issue other than the job's. */
@@ -147,13 +162,18 @@ export function lastRun(job: Job): Settled | undefined {
   return s.kind === "relaying" || s.kind === "awaiting_reply" ? s.relay.after : undefined;
 }
 
+/** The job other than `exceptId` that is running in a local directory; a directory takes one run at a time. */
+export function activeJobInDir(store: Pick<Store, "jobs">, path: string, exceptId: string): Job | undefined {
+  return Object.values(store.jobs).find((j) => j.id !== exceptId && j.repo.kind === "dir" && j.repo.path === path && isActive(j));
+}
+
 /** A finished or cancelled job whose worktree a later mention continues, also while a relay waits for its reply. */
 export function isResumable(job: Job): boolean {
   return !isActive(job) && lastRun(job) !== undefined && job.worktreeId !== undefined;
 }
 
 /** A new run on the same worktree starts with no dispatch, progress or start message of the last one. */
-const fresh = { taskId: undefined, dispatchId: undefined, progress: undefined, startMsg: undefined };
+const fresh = { taskId: undefined, dispatchId: undefined, progress: undefined, startMsg: undefined, runBase: undefined };
 
 /** Returns undefined when the event does not apply to the job's current state. */
 export function transition(job: Job, ev: JobEvent): Job | undefined {
@@ -167,6 +187,7 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
         worktreeId: ev.worktreeId,
         taskId: ev.taskId,
         dispatchId: ev.dispatchId,
+        runBase: ev.base,
         state: { kind: "working" },
       };
     case "start_failed":
@@ -288,7 +309,7 @@ export type InboxOutcome = {
 };
 
 /** What the caller read from disk or GitHub: the plan for a plan-mode question, the rest for a worker_done. */
-export type Extras = { prUrlFallback?: string; report?: string; sessionId?: string; plan?: string; relayFile?: string };
+export type Extras = { prUrlFallback?: string; report?: string; sessionId?: string; plan?: string; relayFile?: string; changedFiles?: readonly string[] };
 
 function hash(text: string): string {
   return createHash("sha256").update(text).digest("hex");
@@ -304,9 +325,18 @@ function prLabel(url: string): string {
   return m ? `${m[1]}/${m[2]}#${m[3]}` : url;
 }
 
-function doneMessageFor(job: Job, outcome: "succeeded" | "failed", summary: string, prUrl: string | undefined): Message {
+function filesList(files: readonly string[] | undefined): string {
+  if (!files) return "_No pude leer qué archivos se commitearon._";
+  return files.length ? `*Archivos commiteados:*\n${files.map((f) => `• \`${f}\``).join("\n")}` : "No commiteé archivos.";
+}
+
+function doneMessageFor(job: Job, outcome: "succeeded" | "failed", summary: string, prUrl: string | undefined, changedFiles?: readonly string[]): Message {
   const who = `<@${job.slack.requester}>`;
   const failed = `❌ ${who} no pude completarlo.`;
+  // A local directory has no PR: what the human checks is the files the run committed there.
+  if (job.repo.kind === "dir" && (job.mode === "change" || job.mode === "plan")) {
+    return doneMessage(`${outcome === "failed" ? failed : `✅ ${who} listo en ${job.repo.name}.`}\n\n${summary}\n\n${filesList(changedFiles)}`);
+  }
   switch (job.mode) {
     case "review": {
       const pr = reviewedPr(job, prUrl);
@@ -364,7 +394,7 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: Extra
       const prUrl = extractPrUrl(msg.body ?? "") ?? extractPrUrl(report ?? "") ?? extras.prUrlFallback;
       const next = transition(job, { kind: "worker_done", outcome, summary, prUrl, sessionId });
       if (!next) return undefined;
-      const { text, blocks } = doneMessageFor(job, outcome, summary, prUrl);
+      const { text, blocks } = doneMessageFor(job, outcome, summary, prUrl, extras.changedFiles);
       return { job: next, post: text, blocks, release: payload.dispatchId };
     }
     default:

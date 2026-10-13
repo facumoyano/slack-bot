@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { outboxDir, outboxFiles, retire } from "./files.ts";
+import { jobSlug, outboxDir, outboxFiles, retire } from "./files.ts";
 import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
 import { expireApprovals, expireRelays, retireStart, startsSettled } from "./bot.ts";
@@ -11,10 +11,10 @@ import type { Orca } from "./orca.ts";
 import type { StoreHandle } from "./store.ts";
 
 export type InboxDeps = {
-  orca: Pick<Orca, "checkInbox" | "release" | "lookupPrUrl" | "reply">;
+  orca: Pick<Orca, "checkInbox" | "release" | "lookupPrUrl" | "reply" | "changedFiles">;
   poster: Poster;
   store: StoreHandle;
-  latestSession(worktreePath: string): Promise<string | undefined>;
+  latestSession(worktreePath: string, marker?: string): Promise<string | undefined>;
   /** Where each job's `out/` folder lives. */
   filesRoot: string;
   now?(): number;
@@ -23,8 +23,18 @@ export type InboxDeps = {
 async function prFallback(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
   if (msg.type !== "worker_done" || extractPrUrl(msg.body ?? "")) return undefined;
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
-  if (!job?.worktreeId) return undefined;
+  if (!job?.worktreeId || job.repo.kind === "dir") return undefined;
   return deps.orca.lookupPrUrl(job.worktreeId, job.repo.owner, job.repo.name);
+}
+
+/** Undefined when git could not say, so the post admits it instead of claiming nothing changed. */
+async function dirChanges(deps: InboxDeps, msg: InboxMessage): Promise<string[] | undefined> {
+  const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
+  if (msg.type !== "worker_done" || job?.repo.kind !== "dir" || job.state.kind === "relaying") return undefined;
+  return deps.orca.changedFiles(job.repo.path, job.runBase).catch((err) => {
+    console.error(`changed files of ${job.id} failed:`, err);
+    return undefined;
+  });
 }
 
 function relayFile(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
@@ -52,7 +62,7 @@ async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | u
   if (msg.type !== "worker_done") return undefined;
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
   if (!job?.worktreeId) return undefined;
-  return deps.latestSession(worktreePath(job.worktreeId)).catch((err) => {
+  return deps.latestSession(worktreePath(job.worktreeId), jobSlug(job.id)).catch((err) => {
     console.error(`session lookup for ${job.id} failed:`, err);
     return undefined;
   });
@@ -109,6 +119,7 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
       sessionId: await sessionOf(deps, msg),
       plan: await renderedPlan(deps, msg),
       relayFile: await relayFile(deps, msg),
+      changedFiles: await dirChanges(deps, msg),
     };
     const before = findJobByDispatch(data, parsePayload(msg).dispatchId);
     const outcome = applyInboxMessage(data, msg, extras, now());

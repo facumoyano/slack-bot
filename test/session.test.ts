@@ -31,3 +31,16 @@ test("the newest .jsonl wins; subdirectories, other files and unsafe names are i
 test("a missing projects dir has no session", async () => {
   assert.equal(await newestSession(join(tmpdir(), "does-not-exist-42")), undefined);
 });
+
+test("with a marker, a newer session that does not name the job (someone's own Claude in the same directory) is skipped", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sessions-"));
+  const at = async (name: string, body: string, seconds: number) => {
+    await writeFile(join(dir, name), body);
+    await utimes(join(dir, name), seconds, seconds);
+  };
+  await at("aaaa-worker.jsonl", '{"message":"report to data/reports/C1-17-00.md"}', 1000);
+  await at("bbbb-human.jsonl", '{"message":"armá el post de mañana"}', 2000);
+
+  assert.equal(await newestSession(dir, "C1-17-00"), "aaaa-worker");
+  assert.equal(await newestSession(dir), "bbbb-human");
+});

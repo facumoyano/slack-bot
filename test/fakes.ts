@@ -62,10 +62,18 @@ export function fakes(over: Partial<Orca> = {}) {
       specs.push(o.spec);
       return { taskId: "t1", dispatchId: "d1", worktreeId: "r1::/wt/api" };
     },
-    async startFollowUp(o) {
+    async startInWorktree(o) {
       calls.push(`followup ${o.worktree}`);
       specs.push(o.spec);
       return { taskId: "t2", dispatchId: "d2" };
+    },
+    async headSha(path) {
+      calls.push(`head ${path}`);
+      return "base0";
+    },
+    async changedFiles(path, since) {
+      calls.push(`changed ${path} ${since}`);
+      return [];
     },
     async createTerminal(o) {
       calls.push(`terminal ${o.worktree} ${o.command}`);
@@ -119,6 +127,11 @@ export function fakes(over: Partial<Orca> = {}) {
     poster,
     store,
     resolveRepo: async () => "r1",
+    dirs: {},
+    async resolveDir(path) {
+      calls.push(`resolve-dir ${path}`);
+      return "rdir";
+    },
     allowedUsers: new Set(["U1", "U2"]),
     approvalUsers: new Set(["T1", "T2"]),
     knownRepos: async () => [

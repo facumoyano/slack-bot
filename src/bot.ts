@@ -7,14 +7,14 @@ import type { Block, Click } from "./blocks.ts";
 import { commandMode, helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
 import { mkdir } from "node:fs/promises";
-import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
+import { downloadFiles, inboxDir, jobSlug, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
 import type { LocalFile } from "./files.ts";
-import { PLAN_OPTIONS, awaitsReply, dueRelayExpiries, isActive, isOtherTask, isResumable, jobId, jobLabel, lastRun, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
-import type { Job, JobEvent, Mode, Person, RepoRef } from "./jobs.ts";
+import { PLAN_OPTIONS, activeJobInDir, awaitsReply, dueRelayExpiries, isActive, isOtherTask, isResumable, jobId, jobLabel, lastRun, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
+import type { Job, JobEvent, LocalDir, Mode, Person, RepoRef } from "./jobs.ts";
 import { worktreePath, worktreeSelector } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import { pullTarget, stripMention } from "./parse.ts";
-import type { FoundTarget, KnownRepo } from "./parse.ts";
+import type { DirTarget, FoundTarget, KnownRepo, Target } from "./parse.ts";
 import { instructionOf, mentionedUsers, parseThreadLink } from "./relay.ts";
 import type { UnknownName } from "./relay.ts";
 import { clearReports, planPath, relayPath, reportPath, slackPost } from "./report.ts";
@@ -48,9 +48,13 @@ export type BotDeps = {
   poster: Poster;
   store: StoreHandle;
   resolveRepo(owner: string, name: string): Promise<string>;
+  /** Channels bound to a local directory by `ALFRED_DIRS`, by channel id: every mention there works in that directory. */
+  dirs: Readonly<Record<string, LocalDir>>;
+  /** The Orca repo id of a bound directory, looked up on each use. */
+  resolveDir(path: string): Promise<string>;
   /** GitHub repos Orca already has, for `!repo` and the change-repo picker. */
   knownRepos(): Promise<KnownRepo[]>;
-  latestSession(worktreePath: string): Promise<string | undefined>;
+  latestSession(worktreePath: string, marker?: string): Promise<string | undefined>;
   /** The owners: they start work without asking and approve everyone else's. */
   allowedUsers: ReadonlySet<string>;
   /** Teammates whose requests run only after an owner approves them by DM. */
@@ -76,8 +80,8 @@ export type Mention = {
   user: string;
   text: string;
   context?: string;
-  /** The target for a new job, from the mention and its thread. */
-  target?: FoundTarget;
+  /** The target for a new job, from the mention and its thread; in a bound channel, always its directory. */
+  target?: Target;
   /** A target named deterministically by the mention's own text, never by the thread or Claude. */
   ownTarget?: FoundTarget;
   /** The mention started with this command; `text` is what follows it. */
@@ -157,7 +161,14 @@ async function bringFiles(deps: BotDeps, where: Pick<Job, "slack">, raw: readonl
   return got.files;
 }
 
-export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
+/** In a channel bound to a local directory the directory is the only target: links and repo names in the text never move the work elsewhere. */
+function inBoundChannel(deps: Pick<BotDeps, "dirs">, m: Mention): Mention {
+  const dir = deps.dirs[m.channel];
+  return dir ? { ...m, target: { kind: "dir", ...dir }, ownTarget: undefined } : m;
+}
+
+export async function handleMention(deps: BotDeps, mention: Mention): Promise<void> {
+  const m = inBoundChannel(deps, mention);
   const access = accessOf(deps, m.user);
   const id = jobId(m.channel, m.threadTs);
   const existing = deps.store.data.jobs[id];
@@ -192,7 +203,11 @@ export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
 }
 
 /** Work that `actor` (the mention's author, or whoever picked its route) asked for: an owner's runs now, a teammate's waits for an owner. */
-function perform(deps: BotDeps, actor: string, m: Mention, work: Work, note?: string): Promise<void> {
+async function perform(deps: BotDeps, actor: string, m: Mention, work: Work, note?: string): Promise<void> {
+  if (work === "review" && m.target?.kind === "dir") {
+    await deps.poster.postToThread(threadOf(m), noReviewIn(m.target));
+    return;
+  }
   return accessOf(deps, actor) === "owner" ? execute(deps, m, work, note) : requestApproval(deps, m, work, note);
 }
 
@@ -207,8 +222,12 @@ function plannedTarget(deps: BotDeps, m: Mention, work: Work): { label: string; 
   if (work === "question") return m.text && m.target ? { label: targetLabel(m.target), followUp: false } : undefined;
   const job = deps.store.data.jobs[jobId(m.channel, m.threadTs)];
   if (work !== "new_thread" && job && isResumable(job)) return { label: jobLabel(job), followUp: true };
-  const target = work === "review" && m.target ? pullTarget(m.target, m.text) : m.target;
+  const target = work === "review" && m.target?.kind !== "dir" && m.target ? pullTarget(m.target, m.text) : m.target;
   return target && { label: targetLabel(target), followUp: false };
+}
+
+function noReviewIn(dir: DirTarget): string {
+  return `\`!revisa\` revisa PRs de GitHub, y ${dir.name} es una carpeta local sin PRs. Pedime el cambio directo, \`!investiga\` o \`!plan\`.`;
 }
 
 const NOT_NOW = (user: string) => `🙅 <@${user}>, por ahora no puedo tomar este pedido.`;
@@ -287,9 +306,13 @@ function runMode(deps: BotDeps, m: Mention, mode: Mode, note?: string): Promise<
   const id = jobId(m.channel, m.threadTs);
   const existing = deps.store.data.jobs[id];
   if (existing && isActive(existing)) return handleThreadInput(deps, existing, m, { onlyFresh: true });
-  if (existing && isResumable(existing)) return startFollowUp(deps, existing, m, mode, note);
+  if (existing && isResumable(existing)) return holdingDir(deps, existing, dirOf(existing), () => startFollowUp(deps, existing, m, mode, note));
   if (starting.has(id)) return Promise.resolve();
   return startJob(deps, m, mode, undefined, note);
+}
+
+function dirOf(job: Job): LocalDir | undefined {
+  return job.repo.kind === "dir" ? job.repo : undefined;
 }
 
 /** A plain mention: Jev picks the route when it is sure enough for what that route costs, otherwise the human does. */
@@ -386,9 +409,48 @@ export async function retireStart(deps: Pick<BotDeps, "poster">, before: Job | u
   await retireButtons(deps, before.slack.channel, before.startMsg);
 }
 
+/** The thread whose run holds each local directory while its worker starts, before the job is stored as active. */
+const dirClaims = new Map<string, string>();
+
+/** The thread other than `id`'s that holds a local directory: one starting there, or an active job. */
+function dirHolder(deps: Pick<BotDeps, "store">, path: string, id: string): string | undefined {
+  const claimed = dirClaims.get(path);
+  return claimed && claimed !== id ? claimed : activeJobInDir(deps.store.data, path, id)?.id;
+}
+
+function threadLink(deps: Pick<BotDeps, "poster">, id: string): Promise<string> {
+  const at = id.indexOf(":");
+  return deps.poster.permalink(id.slice(0, at), id.slice(at + 1)).catch(() => id);
+}
+
+async function busyText(deps: Pick<BotDeps, "poster">, dir: LocalDir, holder: string): Promise<string> {
+  return `estoy con otro pedido en ${dir.name} (${await threadLink(deps, holder)}); avisame cuando termine`;
+}
+
+/**
+ * Runs `start` holding `dir` for the thread, so a second request there waits for the first instead of editing the same files.
+ * Without a directory, `start` just runs.
+ */
+async function holdingDir(deps: BotDeps, where: Pick<Job, "slack">, dir: LocalDir | undefined, start: () => Promise<void>): Promise<void> {
+  if (!dir) return start();
+  const id = jobId(where.slack.channel, where.slack.threadTs);
+  const holder = dirHolder(deps, dir.path, id);
+  if (holder) {
+    await deps.poster.postToThread(where, await busyText(deps, dir, holder));
+    return;
+  }
+  dirClaims.set(dir.path, id);
+  try {
+    await start();
+  } finally {
+    if (dirClaims.get(dir.path) === id) dirClaims.delete(dir.path);
+  }
+}
+
 function startJob(deps: BotDeps, m: Mention, mode: Mode, intro?: string, note?: string): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
-  const p = startJobOnce(deps, m, mode, intro, note).finally(() => starting.delete(id));
+  const dir = m.target?.kind === "dir" ? m.target : undefined;
+  const p = holdingDir(deps, threadOf(m), dir, () => startJobOnce(deps, m, mode, intro, note)).finally(() => starting.delete(id));
   starting.set(id, p);
   return p;
 }
@@ -420,7 +482,7 @@ function withNote(text: string, note: string | undefined): string {
 
 async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: string, note?: string): Promise<void> {
   const where = threadOf(m);
-  const target = mode === "review" && m.target ? pullTarget(m.target, m.text) : m.target;
+  const target = mode === "review" && m.target?.kind !== "dir" && m.target ? pullTarget(m.target, m.text) : m.target;
   if (!target) {
     const missing =
       mode === "review"
@@ -430,6 +492,7 @@ async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: strin
     return;
   }
 
+  if (target.kind === "dir") return startInDir(deps, m, target, mode, intro, note);
   const { owner, name, issue, source } = target;
   const label = targetLabel(target);
   const guessed =
@@ -460,8 +523,32 @@ async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: strin
   );
 }
 
+/** A first run in a bound channel's directory: on its existing main worktree, never a new one, so the work lands where the team keeps it. */
+async function startInDir(deps: BotDeps, m: Mention, dir: DirTarget, mode: Mode, intro?: string, note?: string): Promise<void> {
+  const where = threadOf(m);
+  await deps.poster.react(m.channel, m.ts, "saluting_face");
+  const startMsg = await postStart(deps, where, withNote(intro ?? START_TEXT[mode].first(dir.name, false, ""), note));
+  let orcaRepoId: string;
+  try {
+    orcaRepoId = await deps.resolveDir(dir.path);
+  } catch (err) {
+    await retireButtons(deps, where.slack.channel, startMsg);
+    await deps.poster.postToThread(where, `❌ <@${m.user}> no encuentro la carpeta ${dir.name} en Orca: ${errorText(err)}`);
+    return;
+  }
+  const repo = { kind: "dir" as const, name: dir.name, path: dir.path, orcaRepoId };
+  const job = newJob({ ...where, repo, worktreeId: `${orcaRepoId}::${dir.path}`, request: m.text, mode, startMsg });
+  deps.store.data.jobs[job.id] = job;
+  deps.store.save();
+  const files = await bringFiles(deps, where, m.files);
+  await launch(deps, job, () =>
+    deps.orca.startInWorktree({ worktree: `path:${dir.path}`, title: taskTitle(job), spec: buildSpec({ job, context: m.context, files, ...runPaths(deps, job.id) }) }),
+  );
+}
+
 /** Tells the thread, and returns for the spec, which other threads already worked on this job's issue or PR. */
 async function announceAntecedents(deps: BotDeps, job: Job): Promise<EarlierWork[]> {
+  if (job.repo.kind === "dir") return [];
   const found = findAntecedents(Object.values(deps.store.data.jobs), { ...job.repo, issue: job.issue }, job.id);
   if (!found.length) return [];
   const earlier = await Promise.all(
@@ -511,7 +598,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode, no
     }
     console.log(`follow-up ${next.id}: fresh worker`);
     await deps.poster.postToThread(next, FRESH_FOLLOW_UP).catch(() => {});
-    return deps.orca.startFollowUp({
+    return deps.orca.startInWorktree({
       worktree,
       title,
       spec: buildSpec({ job: next, previousSummary: previous.summary, previousPrUrl: previous.prUrl, ...paths }),
@@ -553,7 +640,7 @@ async function answer(deps: BotDeps, m: Mention, note?: string): Promise<void> {
   }
   await deps.poster.react(m.channel, m.ts, "eyes");
   try {
-    const repoPath = await deps.orca.repoPath(await deps.resolveRepo(m.target.owner, m.target.name));
+    const repoPath = m.target.kind === "dir" ? m.target.path : await deps.orca.repoPath(await deps.resolveRepo(m.target.owner, m.target.name));
     const files = await bringFiles(deps, where, m.files);
     const text = await deps.ask({ repoPath, question: m.text, thread: m.context, files });
     await deps.poster.postToThread(where, withNote(slackPost(text), note));
@@ -570,13 +657,25 @@ function knownReposOrNone(deps: BotDeps): Promise<KnownRepo[]> {
   });
 }
 
-function knownList(repos: readonly KnownRepo[]): string {
-  return repos.length ? `Repos que conozco: ${repos.map((r) => `\`${r.owner}/${r.name}\``).join(", ")}.` : "Orca no tiene repos de GitHub cargados todavía.";
+/** Bound directories are listed but never join `repos`, which also feeds repo guessing and the change-repo picker. */
+function knownList(repos: readonly KnownRepo[], dirs: Readonly<Record<string, LocalDir>>): string {
+  const local = [...new Map(Object.values(dirs).map((d) => [d.path, d])).values()].map((d) => `\`${d.name}\` (carpeta local)`);
+  const all = [...repos.map((r) => `\`${r.owner}/${r.name}\``), ...local];
+  return all.length ? `Repos que conozco: ${all.join(", ")}.` : "Orca no tiene repos de GitHub cargados todavía.";
 }
 
 async function channelRepo(deps: BotDeps, m: Mention, access: Access): Promise<void> {
   const repos = await knownReposOrNone(deps);
   const arg = parseRepoArg(m.text, repos);
+  const dir = deps.dirs[m.channel];
+  if (dir) {
+    const text =
+      arg.kind === "show"
+        ? `📁 este canal trabaja en la carpeta local ${dir.name} (\`${dir.path}\`), sin GitHub.\n${knownList(repos, deps.dirs)}`
+        : `Este canal está atado a la carpeta local ${dir.name} (\`ALFRED_DIRS\`), así que no le fijo otro repo. Para un repo de GitHub, pedímelo en otro canal.`;
+    await deps.poster.postToThread(threadOf(m), text);
+    return;
+  }
   if (access !== "owner" && (arg.kind === "set" || arg.kind === "clear")) {
     await deps.poster.postToThread(threadOf(m), "No puedo cambiar el repo de este canal desde tu pedido.");
     return;
@@ -586,7 +685,7 @@ async function channelRepo(deps: BotDeps, m: Mention, access: Access): Promise<v
   let text: string;
   switch (arg.kind) {
     case "show":
-      text = `${current ? `📌 repo de este canal: ${targetLabel(current)}` : "Este canal no tiene repo por defecto."}\n${knownList(repos)}`;
+      text = `${current ? `📌 repo de este canal: ${targetLabel(current)}` : "Este canal no tiene repo por defecto."}\n${knownList(repos, deps.dirs)}`;
       break;
     case "clear":
       delete channels[m.channel];
@@ -599,7 +698,7 @@ async function channelRepo(deps: BotDeps, m: Mention, access: Access): Promise<v
       text = `📌 repo de este canal: ${targetLabel(arg.repo)}`;
       break;
     case "unknown":
-      text = `No reconozco \`${arg.text}\` como repo. Pasame un link de GitHub, \`owner/nombre\` o el nombre exacto de un repo de Orca.\n${knownList(repos)}`;
+      text = `No reconozco \`${arg.text}\` como repo. Pasame un link de GitHub, \`owner/nombre\` o el nombre exacto de un repo de Orca.\n${knownList(repos, deps.dirs)}`;
       break;
   }
   await deps.poster.postToThread(threadOf(m), text);
@@ -625,15 +724,13 @@ async function cancel(deps: BotDeps, m: Pick<Mention, "channel" | "threadTs" | "
   const worktreeId = job.worktreeId;
   const [sessionId, branch] = worktreeId
     ? await Promise.all([
-        deps.latestSession(worktreePath(worktreeId)).catch(() => undefined),
+        deps.latestSession(worktreePath(worktreeId), jobSlug(job.id)).catch(() => undefined),
         deps.orca.currentBranch(worktreeId).catch(() => undefined),
       ])
     : [];
   if (!(await commitEnding(deps, job, { kind: "cancelled", sessionId }))) return;
-  await deps.poster.postToThread(
-    job,
-    `⏹️ cancelado. El trabajo queda en la rama ${branch ? `\`${branch}\`` : "del worktree"} por si querés retomarlo (mencioname en este hilo).`,
-  );
+  const kept = job.repo.kind === "dir" ? `en la carpeta ${job.repo.name}` : `en la rama ${branch ? `\`${branch}\`` : "del worktree"}`;
+  await deps.poster.postToThread(job, `⏹️ cancelado. El trabajo queda ${kept} por si querés retomarlo (mencioname en este hilo).`);
 }
 
 function tracked(start: Promise<void>): Promise<void> {
@@ -650,8 +747,9 @@ async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca[
   try {
     await clearReports(job.id);
     await mkdir(outboxDir(deps.filesRoot, job.id), { recursive: true });
+    const base = job.repo.kind === "dir" ? await deps.orca.headSha(job.repo.path) : undefined;
     const w = await start();
-    commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId });
+    commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId, base });
   } catch (err) {
     console.error(`worker start failed for ${job.id}:`, err);
     await commitEnding(deps, job, { kind: "start_failed", error: errorText(err) });
@@ -831,6 +929,9 @@ export async function handleDm(deps: BotDeps, dm: DirectMessage): Promise<void> 
   if (isActive(job)) return tell(`ese hilo está trabajando ahora; mandámelo cuando termine (${thread})`);
   if (!isResumable(job) || !job.sessionId) return tell(`no tengo una sesión que pueda retomar en ${thread}`);
   const named = await namedPeople(deps, instruction);
+  const dir = dirOf(job);
+  const holder = dir && dirHolder(deps, dir.path, id);
+  if (dir && holder) return tell(await busyText(deps, dir, holder));
   const next = commit(deps, job, { kind: "relay", relay: { owner: dm.user, dmThread, instruction, ...named, link: thread } });
   if (!next) return;
   await tell(`👌 voy con eso en ${thread}`);
@@ -885,9 +986,17 @@ async function launchRelayOnce(deps: BotDeps, job: Job): Promise<void> {
 /** Only the first qualifying reply runs: `commit` applies to the stored job, which a first reply has already moved past awaiting_reply. */
 async function relayReply(deps: BotDeps, job: Job, r: { user: string; text: string }): Promise<void> {
   if (job.state.kind !== "awaiting_reply") return;
-  const from = job.state.relay.people.find((p) => p.id === r.user) ?? { id: r.user, name: await nameOf(deps, r.user) };
+  const { relay } = job.state;
+  const from = relay.people.find((p) => p.id === r.user) ?? { id: r.user, name: await nameOf(deps, r.user) };
+  const dir = dirOf(job);
+  const holder = dir && dirHolder(deps, dir.path, job.id);
   const next = commit(deps, job, { kind: "relay_reply", from, text: r.text });
-  if (next) await launchRelay(deps, next);
+  if (!next) return;
+  if (!dir || !holder) return launchRelay(deps, next);
+  // Its directory is busy with another thread's run, so the owner gets the reply as written instead of a digest.
+  commit(deps, next, { kind: "relay_ended" });
+  const text = `💬 ${from.name} respondió en ${relay.link}:\n${quote(r.text)}\n_No lo resumí porque estoy con otro pedido en ${dir.name} (${await threadLink(deps, holder)})._`;
+  await deps.poster.dm(relay.owner, text, undefined, relay.dmThread).catch((err) => console.error(`DM to ${relay.owner} failed:`, err));
 }
 
 async function nameOf(deps: BotDeps, id: string): Promise<string> {

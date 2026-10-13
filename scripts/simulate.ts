@@ -12,7 +12,7 @@ import type { Block } from "../src/blocks.ts";
 import { runInbox } from "../src/inbox.ts";
 import { FILES_ROOT } from "../src/files.ts";
 import { jobId } from "../src/jobs.ts";
-import { ensureRun, findRepo, knownGithubRepos, realOrca, repoIdForPath } from "../src/orca.ts";
+import { ensureRun, findRepo, knownGithubRepos, orcaRepoAt, realOrca, repoIdForPath } from "../src/orca.ts";
 import { chooseTarget } from "../src/parse.ts";
 import { classifyWithJev } from "../src/route.ts";
 import { latestSession } from "../src/session.ts";
@@ -22,6 +22,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     "repo-path": { type: "string" },
+    dir: { type: "string" },
     state: { type: "string", default: "data/simulate-state.json" },
     "follow-up": { type: "string" },
     "cancel-after": { type: "string" },
@@ -37,7 +38,7 @@ const { values, positionals } = parseArgs({
 const request = positionals.join(" ").trim();
 if (!request) {
   console.error(
-    'usage: node scripts/simulate.ts [--repo-path <orca repo path>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... [--dm "<owner DM>"]... [--reply-as <userId>] [--reply "<text>"] [--users <id=name,…>] "<request text or !command>"',
+    'usage: node scripts/simulate.ts [--repo-path <orca repo path> | --dir <local directory in Orca>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... [--dm "<owner DM>"]... [--reply-as <userId>] [--reply "<text>"] [--users <id=name,…>] "<request text or !command>"',
   );
   process.exit(2);
 }
@@ -116,6 +117,16 @@ const resolveRepo = (owner: string, name: string) =>
   repoPath && owner === "local" && name === basename(repoPath) ? repoIdForPath(repoPath) : findRepo(owner, name);
 const knownRepos = async () => [...local, ...(await knownGithubRepos())];
 
+const channel = "SIM";
+/** `--dir` binds the simulated channel to a local directory, as ALFRED_DIRS does. */
+const dirPath = values.dir ? resolve(values.dir) : undefined;
+const dirRepo = dirPath ? await orcaRepoAt(dirPath) : undefined;
+if (dirPath && !dirRepo) {
+  console.error(`${dirPath} is not an Orca repo; run: orca repo add --path ${dirPath}`);
+  process.exit(2);
+}
+const dirs = dirPath && dirRepo ? { [channel]: { name: dirRepo.name, path: dirPath } } : {};
+
 const store = openStore(values.state!);
 store.data.runId = await ensureRun(store.data.runId);
 store.save();
@@ -150,8 +161,7 @@ const people = [`${OWNER}=owner`, ...values.users!.split(",")].map((pair) => {
 });
 const users = async () => people;
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify, users };
-const channel = "SIM";
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, dirs, resolveDir: repoIdForPath, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify, users };
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
 const target =
   (await chooseTarget({ own: [text], thread: [], repos: await knownRepos(), channelRepo: store.data.channels[channel], infer: async () => undefined })) ??
