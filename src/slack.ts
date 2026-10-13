@@ -97,7 +97,8 @@ export function registerMentions(app: bolt.App, deps: BotDeps, readThread: (chan
         return [];
       });
       const ownTarget = findTarget(ownTexts, repos);
-      const target = await chooseTarget({
+      // A bound channel's target is its directory (handleMention sets it); asking Claude to guess a repo there is wasted.
+      const target = deps.dirs[event.channel] ? undefined : await chooseTarget({
         own: ownTexts,
         thread: threadTexts,
         repos,

@@ -1,12 +1,19 @@
-import type { RepoRef, RepoSource } from "./jobs.ts";
+import type { LocalDir, RepoRef, RepoSource } from "./jobs.ts";
 
 export type GithubTarget = {
+  kind?: "github";
   owner: string;
   name: string;
   issue?: { number: number; url: string };
 };
 
 export type FoundTarget = GithubTarget & { source: RepoSource };
+
+/** The local directory a bound channel works in. */
+export type DirTarget = LocalDir & { kind: "dir" };
+
+/** What a mention works on: a GitHub repo (or one of its issues or PRs), or the channel's local directory. */
+export type Target = FoundTarget | DirTarget;
 
 const SEG = String.raw`[A-Za-z0-9_.-]+`;
 const ITEM_URL = new RegExp(String.raw`github\.com/(${SEG})/(${SEG})/(issues|pull)/(\d+)`);

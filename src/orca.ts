@@ -87,8 +87,8 @@ export function worktreeSelector(worktreeId: string): string {
   return `path:${worktreePath(worktreeId)}`;
 }
 
-/** `worktree` is a selector from `worktreeSelector`. */
-export async function startFollowUp(opts: { worktree: string; title: string; spec: string }): Promise<WorkerStart> {
+/** A fresh worker in a worktree that already exists: a follow-up's, or a bound local directory's main worktree. `worktree` is a `path:` selector. */
+export async function startInWorktree(opts: { worktree: string; title: string; spec: string }): Promise<WorkerStart> {
   const result = await orca([
     "orchestration", "worker-start",
     "--spec", opts.spec,
@@ -226,6 +226,22 @@ export async function currentBranch(worktreeId: string): Promise<string | undefi
   return branch.code === 0 && head ? head : undefined;
 }
 
+/** HEAD of a local directory, or undefined while it has no commits. */
+export async function headSha(path: string): Promise<string | undefined> {
+  const head = await exec("git", ["-C", path, "rev-parse", "--verify", "--quiet", "HEAD"]);
+  return head.code === 0 ? head.stdout.trim() : undefined;
+}
+
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** Files committed in a local directory since `since` (its HEAD when the run started; undefined when it had no commits). */
+export async function changedFiles(path: string, since: string | undefined): Promise<string[]> {
+  if (!(await headSha(path))) return [];
+  const diff = await exec("git", ["-C", path, "diff", "--name-only", "--no-renames", since ?? EMPTY_TREE, "HEAD"]);
+  if (diff.code !== 0) throw new Error(`git diff in ${path} failed: ${diff.stderr.trim()}`);
+  return diff.stdout.split("\n").filter(Boolean);
+}
+
 /** Fallback when worker_done omits the PR line: look the PR up by the worktree's branch. */
 export async function lookupPrUrl(worktreeId: string, owner: string, name: string): Promise<string | undefined> {
   const head = await currentBranch(worktreeId);
@@ -241,7 +257,9 @@ export async function lookupPrUrl(worktreeId: string, owner: string, name: strin
 
 export type Orca = {
   startWorker: typeof startWorker;
-  startFollowUp: typeof startFollowUp;
+  startInWorktree: typeof startInWorktree;
+  headSha: typeof headSha;
+  changedFiles: typeof changedFiles;
   createTerminal: typeof createTerminal;
   waitTuiIdle: typeof waitTuiIdle;
   closeTerminal: typeof closeTerminal;
@@ -258,7 +276,9 @@ export type Orca = {
 
 export const realOrca: Orca = {
   startWorker,
-  startFollowUp,
+  startInWorktree,
+  headSha,
+  changedFiles,
   createTerminal,
   waitTuiIdle,
   closeTerminal,

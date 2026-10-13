@@ -11,7 +11,7 @@ import type { Orca } from "./orca.ts";
 import type { StoreHandle } from "./store.ts";
 
 export type InboxDeps = {
-  orca: Pick<Orca, "checkInbox" | "release" | "lookupPrUrl" | "reply">;
+  orca: Pick<Orca, "checkInbox" | "release" | "lookupPrUrl" | "reply" | "changedFiles">;
   poster: Poster;
   store: StoreHandle;
   latestSession(worktreePath: string): Promise<string | undefined>;
@@ -25,6 +25,16 @@ async function prFallback(deps: InboxDeps, msg: InboxMessage): Promise<string | 
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
   if (!job?.worktreeId || job.repo.kind === "dir") return undefined;
   return deps.orca.lookupPrUrl(job.worktreeId, job.repo.owner, job.repo.name);
+}
+
+/** Undefined when git could not say, so the post admits it instead of claiming nothing changed. */
+async function dirChanges(deps: InboxDeps, msg: InboxMessage): Promise<string[] | undefined> {
+  const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
+  if (msg.type !== "worker_done" || job?.repo.kind !== "dir" || job.state.kind === "relaying") return undefined;
+  return deps.orca.changedFiles(job.repo.path, job.runBase).catch((err) => {
+    console.error(`changed files of ${job.id} failed:`, err);
+    return undefined;
+  });
 }
 
 function relayFile(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
@@ -109,6 +119,7 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
       sessionId: await sessionOf(deps, msg),
       plan: await renderedPlan(deps, msg),
       relayFile: await relayFile(deps, msg),
+      changedFiles: await dirChanges(deps, msg),
     };
     const before = findJobByDispatch(data, parsePayload(msg).dispatchId);
     const outcome = applyInboxMessage(data, msg, extras, now());
