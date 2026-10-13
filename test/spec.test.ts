@@ -152,6 +152,11 @@ test("only an explicit ask to leave it on GitHub counts", () => {
   for (const no of ["revisá el PR", "mirá si los tests de github actions pasan", "¿está listo para mergear?", ""]) assert.ok(!wantsGithubComment(no), no);
 });
 
+test("a review follow-up in a thread that started from an issue reviews the PR that thread opened", () => {
+  const spec = buildSpec({ ...paths, job: { ...base, issue: { number: 5, url: "https://github.com/acme/api/issues/5" }, mode: "review", request: "revisá el PR que abriste" }, resumed: true, previousPrUrl: "https://github.com/acme/api/pull/12" });
+  assert.match(spec, /The pull request under review is https:\/\/github\.com\/acme\/api\/pull\/12/);
+});
+
 test("a resumed review is not told to update a PR", () => {
   const spec = buildSpec({ ...paths, job: { ...base, issue: pr, mode: "review", request: "y ahora?" }, resumed: true, previousPrUrl: pr.url });
   assert.doesNotMatch(spec, /Update the existing PR/);

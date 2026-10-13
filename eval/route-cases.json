@@ -1,326 +1,326 @@
 [
-{
-"text": "arreglá el bug del login que tira 500 cuando el token vence",
-"label": "change"
-},
-{
-"text": "agregá un endpoint para exportar los clientes a CSV",
-"label": "change"
-},
-{
-"text": "https://github.com/fyso-dev/fyso_backend/issues/1752",
-"label": "change"
-},
-{
-"text": "tomá este issue https://github.com/acme/api/issues/88 y resolvelo",
-"label": "change"
-},
-{
-"text": "revisá si esto está bien y arreglalo",
-"context": "el cálculo del IVA en facturas da mal cuando hay descuento",
-"label": "change"
-},
-{
-"text": "ahora arreglalo",
-"job": {
-"mode": "investigate",
-"state": "done"
-},
-"label": "change"
-},
-{
-"text": "dale",
-"job": {
-"mode": "investigate",
-"state": "done"
-},
-"context": "¿querés que lo arregle?",
-"label": "change"
-},
-{
-"text": "agregale tests a lo que hiciste",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "change"
-},
-{
-"text": "aplicá los comentarios del review de Nora",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "change"
-},
-{
-"text": "mergealo",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "change"
-},
-{
-"text": "renombrá la función calcTotal a computeInvoiceTotal en todo el repo",
-"label": "change"
-},
-{
-"text": "el botón de guardar no hace nada en safari, fijate y corregilo",
-"label": "change"
-},
-{
-"text": "actualizá la dependencia de axios a la última versión",
-"label": "change"
-},
-{
-"text": "¿qué dice el README de este repo?",
-"label": "question"
-},
-{
-"text": "¿dónde se valida el token de la API?",
-"label": "question"
-},
-{
-"text": "¿qué hace la función applyDiscount?",
-"label": "question"
-},
-{
-"text": "¿en qué archivo se configuran las rutas?",
-"label": "question"
-},
-{
-"text": "¿cómo se conecta el backend a la base de datos?",
-"label": "question"
-},
-{
-"text": "¿qué versión de node usa el proyecto?",
-"label": "question"
-},
-{
-"text": "¿hay algún test para el webhook de pagos?",
-"label": "question"
-},
-{
-"text": "¿por qué usamos redis acá?",
-"context": "estoy leyendo src/cache.ts",
-"label": "question"
-},
-{
-"text": "¿podés mirar por qué falla el deploy?",
-"label": "investigate"
-},
-{
-"text": "investigá por qué el webhook responde 500 desde ayer",
-"label": "investigate"
-},
-{
-"text": "los tests de integración fallan de forma intermitente en CI, ¿qué está pasando?",
-"label": "investigate"
-},
-{
-"text": "fijate por qué la query de reportes tarda 30 segundos",
-"label": "investigate"
-},
-{
-"text": "¿desde qué commit se rompió el login?",
-"label": "investigate"
-},
-{
-"text": "reproducí el bug que reporta el cliente y decime la causa, no cambies nada todavía",
-"label": "investigate"
-},
-{
-"text": "¿por qué este cambio rompió los tests?",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "investigate"
-},
-{
-"text": "revisá este PR https://github.com/acme/api/pull/45",
-"label": "review"
-},
-{
-"text": "https://github.com/fyso-dev/fyso_backend/pull/1754",
-"label": "review"
-},
-{
-"text": "explicame qué hace este PR https://github.com/acme/api/pull/45",
-"label": "review"
-},
-{
-"text": "¿está listo para mergear el PR de Salva? https://github.com/acme/web/pull/301",
-"label": "review"
-},
-{
-"text": "dale una mirada al PR 45 a ver si se me escapó algo",
-"context": "https://github.com/acme/api/pull/45",
-"label": "review"
-},
-{
-"text": "¿este PR rompe algo? https://github.com/acme/api/pull/77",
-"label": "review"
-},
-{
-"text": "revisá el PR que abriste",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "review"
-},
-{
-"text": "hacé un plan para migrar la base de datos a Postgres 16",
-"label": "plan"
-},
-{
-"text": "antes de tocar nada mostrame cómo lo harías",
-"context": "hay que separar el módulo de facturación en un servicio aparte",
-"label": "plan"
-},
-{
-"text": "armá un plan para agregar autenticación con SSO y lo vemos",
-"label": "plan"
-},
-{
-"text": "planificá cómo sacar jquery del frontend, quiero aprobarlo primero",
-"label": "plan"
-},
-{
-"text": "proponé un plan para el issue https://github.com/acme/api/issues/90 antes de implementar",
-"label": "plan"
-},
-{
-"text": "ok gracias",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "none"
-},
-{
-"text": "genial, gracias!",
-"job": {
-"mode": "investigate",
-"state": "done"
-},
-"label": "none"
-},
-{
-"text": "dale",
-"label": "none"
-},
-{
-"text": "jaja buenísimo",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "none"
-},
-{
-"text": "buen día!",
-"label": "none"
-},
-{
-"text": "@nora mirá lo que encontró",
-"job": {
-"mode": "investigate",
-"state": "done"
-},
-"label": "none"
-},
-{
-"text": "perfecto, después lo pruebo yo",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "none"
-},
-{
-"text": "👍",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "none"
-},
-{
-"text": "no anda el login",
-"label": "investigate"
-},
-{
-"text": "¿se puede agregar paginación al listado de clientes?",
-"label": "question"
-},
-{
-"text": "mirá el PR https://github.com/acme/api/pull/45 y arreglá lo que encuentres",
-"label": "change"
-},
-{
-"text": "fijate esto",
-"context": "el reporte de ventas muestra montos duplicados desde el lunes",
-"label": "investigate"
-},
-{
-"text": "¿lo podés arreglar?",
-"job": {
-"mode": "investigate",
-"state": "done"
-},
-"label": "change"
-},
-{
-"text": "el PR 45 tiene conflictos, resolvelos",
-"context": "https://github.com/acme/api/pull/45",
-"label": "change"
-},
-{
-"text": "¿por qué lo hiciste así y no con un middleware?",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "question"
-},
-{
-"text": "chequeá que el PR que abriste no rompa nada más",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "review"
-},
-{
-"text": "no, eso no era lo que pedí: el descuento va antes del IVA",
-"job": {
-"mode": "change",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "change"
-},
-{
-"text": "@salva vos qué opinás?",
-"job": {
-"mode": "plan",
-"state": "done",
-"pr": "https://github.com/acme/api/pull/12"
-},
-"label": "none"
-}
+  {
+    "text": "arreglá el bug del login que tira 500 cuando el token vence",
+    "label": "change"
+  },
+  {
+    "text": "agregá un endpoint para exportar los clientes a CSV",
+    "label": "change"
+  },
+  {
+    "text": "https://github.com/fyso-dev/fyso_backend/issues/1752",
+    "label": "change"
+  },
+  {
+    "text": "tomá este issue https://github.com/acme/api/issues/88 y resolvelo",
+    "label": "change"
+  },
+  {
+    "text": "revisá si esto está bien y arreglalo",
+    "context": "el cálculo del IVA en facturas da mal cuando hay descuento",
+    "label": "change"
+  },
+  {
+    "text": "ahora arreglalo",
+    "job": {
+      "mode": "investigate",
+      "state": "done"
+    },
+    "label": "change"
+  },
+  {
+    "text": "dale",
+    "job": {
+      "mode": "investigate",
+      "state": "done"
+    },
+    "context": "¿querés que lo arregle?",
+    "label": "change"
+  },
+  {
+    "text": "agregale tests a lo que hiciste",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "change"
+  },
+  {
+    "text": "aplicá los comentarios del review de Nora",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "change"
+  },
+  {
+    "text": "mergealo",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "change"
+  },
+  {
+    "text": "renombrá la función calcTotal a computeInvoiceTotal en todo el repo",
+    "label": "change"
+  },
+  {
+    "text": "el botón de guardar no hace nada en safari, fijate y corregilo",
+    "label": "change"
+  },
+  {
+    "text": "actualizá la dependencia de axios a la última versión",
+    "label": "change"
+  },
+  {
+    "text": "¿qué dice el README de este repo?",
+    "label": "question"
+  },
+  {
+    "text": "¿dónde se valida el token de la API?",
+    "label": "question"
+  },
+  {
+    "text": "¿qué hace la función applyDiscount?",
+    "label": "question"
+  },
+  {
+    "text": "¿en qué archivo se configuran las rutas?",
+    "label": "question"
+  },
+  {
+    "text": "¿cómo se conecta el backend a la base de datos?",
+    "label": "question"
+  },
+  {
+    "text": "¿qué versión de node usa el proyecto?",
+    "label": "question"
+  },
+  {
+    "text": "¿hay algún test para el webhook de pagos?",
+    "label": "question"
+  },
+  {
+    "text": "¿por qué usamos redis acá?",
+    "context": "estoy leyendo src/cache.ts",
+    "label": "question"
+  },
+  {
+    "text": "¿podés mirar por qué falla el deploy?",
+    "label": "investigate"
+  },
+  {
+    "text": "investigá por qué el webhook responde 500 desde ayer",
+    "label": "investigate"
+  },
+  {
+    "text": "los tests de integración fallan de forma intermitente en CI, ¿qué está pasando?",
+    "label": "investigate"
+  },
+  {
+    "text": "fijate por qué la query de reportes tarda 30 segundos",
+    "label": "investigate"
+  },
+  {
+    "text": "¿desde qué commit se rompió el login?",
+    "label": "investigate"
+  },
+  {
+    "text": "reproducí el bug que reporta el cliente y decime la causa, no cambies nada todavía",
+    "label": "investigate"
+  },
+  {
+    "text": "¿por qué este cambio rompió los tests?",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "investigate"
+  },
+  {
+    "text": "revisá este PR https://github.com/acme/api/pull/45",
+    "label": "review"
+  },
+  {
+    "text": "https://github.com/fyso-dev/fyso_backend/pull/1754",
+    "label": "review"
+  },
+  {
+    "text": "explicame qué hace este PR https://github.com/acme/api/pull/45",
+    "label": "review"
+  },
+  {
+    "text": "¿está listo para mergear el PR de Salva? https://github.com/acme/web/pull/301",
+    "label": "review"
+  },
+  {
+    "text": "dale una mirada al PR 45 a ver si se me escapó algo",
+    "context": "https://github.com/acme/api/pull/45",
+    "label": "review"
+  },
+  {
+    "text": "¿este PR rompe algo? https://github.com/acme/api/pull/77",
+    "label": "review"
+  },
+  {
+    "text": "revisá el PR que abriste",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "review"
+  },
+  {
+    "text": "hacé un plan para migrar la base de datos a Postgres 16",
+    "label": "plan"
+  },
+  {
+    "text": "antes de tocar nada mostrame cómo lo harías",
+    "context": "hay que separar el módulo de facturación en un servicio aparte",
+    "label": "plan"
+  },
+  {
+    "text": "armá un plan para agregar autenticación con SSO y lo vemos",
+    "label": "plan"
+  },
+  {
+    "text": "planificá cómo sacar jquery del frontend, quiero aprobarlo primero",
+    "label": "plan"
+  },
+  {
+    "text": "proponé un plan para el issue https://github.com/acme/api/issues/90 antes de implementar",
+    "label": "plan"
+  },
+  {
+    "text": "ok gracias",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "none"
+  },
+  {
+    "text": "genial, gracias!",
+    "job": {
+      "mode": "investigate",
+      "state": "done"
+    },
+    "label": "none"
+  },
+  {
+    "text": "dale",
+    "label": "none"
+  },
+  {
+    "text": "jaja buenísimo",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "none"
+  },
+  {
+    "text": "buen día!",
+    "label": "none"
+  },
+  {
+    "text": "@nora mirá lo que encontró",
+    "job": {
+      "mode": "investigate",
+      "state": "done"
+    },
+    "label": "none"
+  },
+  {
+    "text": "perfecto, después lo pruebo yo",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "none"
+  },
+  {
+    "text": "👍",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "none"
+  },
+  {
+    "text": "no anda el login",
+    "label": "investigate"
+  },
+  {
+    "text": "¿se puede agregar paginación al listado de clientes?",
+    "label": "question"
+  },
+  {
+    "text": "mirá el PR https://github.com/acme/api/pull/45 y arreglá lo que encuentres",
+    "label": "change"
+  },
+  {
+    "text": "fijate esto",
+    "context": "el reporte de ventas muestra montos duplicados desde el lunes",
+    "label": "investigate"
+  },
+  {
+    "text": "¿lo podés arreglar?",
+    "job": {
+      "mode": "investigate",
+      "state": "done"
+    },
+    "label": "change"
+  },
+  {
+    "text": "el PR 45 tiene conflictos, resolvelos",
+    "context": "https://github.com/acme/api/pull/45",
+    "label": "change"
+  },
+  {
+    "text": "¿por qué lo hiciste así y no con un middleware?",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "question"
+  },
+  {
+    "text": "chequeá que el PR que abriste no rompa nada más",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "review"
+  },
+  {
+    "text": "no, eso no era lo que pedí: el descuento va antes del IVA",
+    "job": {
+      "mode": "change",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "change"
+  },
+  {
+    "text": "@salva vos qué opinás?",
+    "job": {
+      "mode": "plan",
+      "state": "done",
+      "pr": "https://github.com/acme/api/pull/12"
+    },
+    "label": "none"
+  }
 ]
