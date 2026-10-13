@@ -2,6 +2,10 @@ display_information:
   name: Alfred
   description: Toma issues de GitHub, los resuelve con un worker de Claude Code y abre el PR.
 features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: true
   bot_user:
     display_name: alfred
     always_online: true
@@ -16,6 +20,7 @@ oauth_config:
       - files:read
       - files:write
       - users:read
+      - im:write
 settings:
   event_subscriptions:
     bot_events:
