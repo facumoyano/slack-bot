@@ -37,6 +37,10 @@ function setup(store?: ReturnType<typeof openStore>) {
   return f;
 }
 
+let dmCount = 0;
+/** A top-level DM, or one written inside the DM thread `threadTs`. */
+const ownerDm = (user: string, text: string, threadTs?: string) => ({ user, text, channel: `D-${user}`, ts: `500.${++dmCount}`, ...(threadTs ? { threadTs } : {}) });
+
 const done = (id: string, outcome = "succeeded"): InboxMessage => ({ id, type: "worker_done", body: "listo", payload: JSON.stringify({ dispatchId: "d3", outcome }) });
 
 async function workerWrites(text: string): Promise<void> {
@@ -46,16 +50,19 @@ async function workerWrites(text: string): Promise<void> {
 
 const ASK = `await: <@U0SALVA01>\n\n<@U0SALVA01> en el PR #486 guardé los permisos en \`agents\` porque:\n- **src/perms.ts:12** los lee con el agente\n\n¿Te parece bien?`;
 
+/** Returns the owner's DM, whose ts roots the DM thread every answer goes to. */
 async function askedSalva(f: ReturnType<typeof setup>) {
-  await handleDm(f.deps, { user: "U1", text: `<${LINK}> preguntale a @salva por qué guardó los permisos en la tabla de agentes` });
+  const dm = ownerDm("U1", `<${LINK}> preguntale a @salva por qué guardó los permisos en la tabla de agentes`);
+  await handleDm(f.deps, dm);
   await workerWrites(ASK);
   await processBatch(f.deps, [done("w-ask")]);
+  return dm;
 }
 
 test("an owner's DM resumes the thread's session with the instruction and the named people's tokens, posting nothing in the thread", async () => {
   const f = setup();
 
-  await handleDm(f.deps, { user: "U1", text: `<${LINK}|hilo> preguntale a @salva por qué guardó los permisos en la tabla de agentes` });
+  await handleDm(f.deps, ownerDm("U1", `<${LINK}|hilo> preguntale a @salva por qué guardó los permisos en la tabla de agentes`));
 
   assert.deepEqual(f.calls, RESUME);
   assert.match(f.specs[0], /PRIVATE INSTRUCTION[\s\S]*preguntale a @salva por qué guardó los permisos en la tabla de agentes/);
@@ -70,8 +77,8 @@ test("an owner's DM resumes the thread's session with the instruction and the na
 test("a teammate's or a stranger's DM gets nothing at all", async () => {
   const f = setup();
 
-  await handleDm(f.deps, { user: "T1", text: `${LINK} avisale a @sebas` });
-  await handleDm(f.deps, { user: "U9", text: `${LINK} avisale a @sebas` });
+  await handleDm(f.deps, ownerDm("T1", `${LINK} avisale a @sebas`));
+  await handleDm(f.deps, ownerDm("U9", `${LINK} avisale a @sebas`));
 
   assert.deepEqual([f.dms, f.posts, f.calls], [[], [], []]);
   assert.equal(f.store.data.jobs[ID].state.kind, "done");
@@ -87,9 +94,9 @@ test("an owner's DM without a link, for an unknown thread, or for a busy one get
     dispatchId: "d9",
   };
 
-  await handleDm(f.deps, { user: "U1", text: "preguntale a @salva" });
-  await handleDm(f.deps, { user: "U1", text: "https://acme.slack.com/archives/COTHER/p1791548002024869 preguntale a @salva" });
-  await handleDm(f.deps, { user: "U1", text: "https://acme.slack.com/archives/CRELAY/p1791548003000001 preguntale a @salva" });
+  await handleDm(f.deps, ownerDm("U1", "preguntale a @salva"));
+  await handleDm(f.deps, ownerDm("U1", "https://acme.slack.com/archives/COTHER/p1791548002024869 preguntale a @salva"));
+  await handleDm(f.deps, ownerDm("U1", "https://acme.slack.com/archives/CRELAY/p1791548003000001 preguntale a @salva"));
 
   assert.match(f.dms[0].text, /^Pegá el link de un mensaje del hilo y qué querés que haga/);
   assert.equal(f.dms[1].text, "no tengo un trabajo en ese hilo");
@@ -100,7 +107,7 @@ test("an owner's DM without a link, for an unknown thread, or for a busy one get
 test("a name nobody in Slack has still runs, and only a thread message for that person is refused, by DM", async () => {
   const f = setup();
 
-  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @zoe si le parece bien` });
+  await handleDm(f.deps, ownerDm("U1", `${LINK} preguntale a @zoe si le parece bien`));
   assert.deepEqual(f.calls, RESUME, "the unknown name does not block the run");
   assert.match(f.specs[0], /match nobody in Slack[^\n]*`zoe`/);
   await workerWrites("await: @zoe\n\n@zoe ¿te parece bien?");
@@ -114,13 +121,15 @@ test("a name nobody in Slack has still runs, and only a thread message for that 
 test("an owner's private question gets a private answer by DM and the thread sees nothing", async () => {
   const f = setup();
 
-  await handleDm(f.deps, { user: "U1", text: `${LINK} ¿por qué elegiste guardar los permisos en la tabla de agentes?` });
+  const dm = ownerDm("U1", `${LINK} ¿por qué elegiste guardar los permisos en la tabla de agentes?`);
+  await handleDm(f.deps, dm);
   assert.match(f.specs[0], /PRIVATE INSTRUCTION[\s\S]*¿por qué elegiste guardar los permisos/);
   await workerWrites("private\n\nPorque **src/perms.ts:12** los lee junto con el agente.");
   await processBatch(f.deps, [done("w-private")]);
 
   assert.deepEqual([f.posts, f.reactions], [[], []], "nothing in the thread");
   assert.equal(f.dms.at(-1)!.text, `💬 en ${THREAD_LINK}:\n\nPorque *src/perms.ts:12* los lee junto con el agente.`);
+  assert.deepEqual(f.dms.map((d) => d.threadTs), [dm.ts, dm.ts], "the ack and the answer reply in the owner's DM thread");
   assert.ok(f.calls.includes("release d3"));
   assert.deepEqual(f.store.data.jobs[ID].state, doneJob().state, "back to the thread's own finished run");
   assert.ok(isResumable(f.store.data.jobs[ID]));
@@ -132,11 +141,11 @@ test("a DM without a link continues the owner's last thread in the same session,
   const OTHER = "1791548003.000001";
   f.deps.store.data.jobs[`${CHANNEL}:${OTHER}`] = { ...doneJob(), id: `${CHANNEL}:${OTHER}`, slack: { channel: CHANNEL, threadTs: OTHER, requester: "U1" }, sessionId: "sess-9" };
 
-  await handleDm(f.deps, { user: "U1", text: `${LINK} ¿qué quedó pendiente?` });
+  await handleDm(f.deps, ownerDm("U1", `${LINK} ¿qué quedó pendiente?`));
   await workerWrites("private\n\nQueda mover la tabla.");
   await processBatch(f.deps, [done("w-1")]);
   f.deps.store = openStore(path);
-  await handleDm(f.deps, { user: "U1", text: "dale, escribile a @salva lo que hablamos" });
+  await handleDm(f.deps, ownerDm("U1", "dale, escribile a @salva lo que hablamos"));
 
   assert.equal(f.dms.at(-1)!.text, `👌 voy con eso en ${THREAD_LINK}`);
   assert.deepEqual(f.calls.filter((c) => c.startsWith("terminal")), [RESUME[0], RESUME[0]], "both steps resume the thread's own session");
@@ -146,17 +155,41 @@ test("a DM without a link continues the owner's last thread in the same session,
   await processBatch(f.deps, [done("w-2")]);
   assert.deepEqual(f.posts, ["<@U0SALVA01> queda pendiente mover la tabla de permisos."]);
 
-  await handleDm(f.deps, { user: "U1", text: `https://acme.slack.com/archives/${CHANNEL}/p1791548003000001 ¿y acá?` });
-  await handleDm(f.deps, { user: "U1", text: "¿algo más?" });
-  assert.equal(openStore(path).data.dmThreads.U1, `${CHANNEL}:${OTHER}`, "the new link switched the thread, also on disk");
+  await handleDm(f.deps, ownerDm("U1", `https://acme.slack.com/archives/${CHANNEL}/p1791548003000001 ¿y acá?`));
+  await handleDm(f.deps, ownerDm("U1", "¿algo más?"));
+  assert.equal(openStore(path).data.lastThreadByOwner.U1, `${CHANNEL}:${OTHER}`, "the new link switched the thread, also on disk");
   assert.equal(f.dms.at(-1)!.text, `ese hilo está trabajando ahora; mandámelo cuando termine (https://slack.test/${CHANNEL}/${OTHER})`, "the linkless DM went to the new thread");
   assert.match(f.calls.at(-3)!, /--resume sess-9$/);
   await rm(dirname(path), { recursive: true, force: true });
 });
 
+test("a DM inside an earlier DM thread goes to that thread's work and session, even after another link, and answers there", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "relay-store-")), "state.json");
+  const f = setup(openStore(path));
+  const OTHER = "1791548003.000001";
+  f.deps.store.data.jobs[`${CHANNEL}:${OTHER}`] = { ...doneJob(), id: `${CHANNEL}:${OTHER}`, slack: { channel: CHANNEL, threadTs: OTHER, requester: "U1" }, sessionId: "sess-9" };
+
+  const first = ownerDm("U1", `${LINK} ¿qué quedó pendiente?`);
+  await handleDm(f.deps, first);
+  await workerWrites("private\n\nQueda mover la tabla.");
+  await processBatch(f.deps, [done("w-1")]);
+  await handleDm(f.deps, ownerDm("U1", `https://acme.slack.com/archives/${CHANNEL}/p1791548003000001 ¿y acá?`));
+  await workerWrites("private\n\nAcá nada.");
+  await processBatch(f.deps, [done("w-2")]);
+  f.deps.store = openStore(path);
+  const sent = f.dms.length;
+
+  await handleDm(f.deps, ownerDm("U1", "dale, escribile a @salva lo que hablamos", first.ts));
+
+  assert.deepEqual(f.dms.slice(sent).map((d) => [d.text, d.threadTs]), [[`👌 voy con eso en ${THREAD_LINK}`, first.ts]]);
+  assert.match(f.calls.filter((c) => c.startsWith("terminal")).at(-1)!, /--resume sess-1$/, "the first thread's session, not the last link's");
+  assert.equal(f.deps.store.data.jobs[ID].state.kind, "relaying");
+  await rm(dirname(path), { recursive: true, force: true });
+});
+
 test("an owner's first DM ever without a link gets the usage", async () => {
   const f = setup();
-  await handleDm(f.deps, { user: "U1", text: "¿qué quedó pendiente?" });
+  await handleDm(f.deps, ownerDm("U1", "¿qué quedó pendiente?"));
   assert.match(f.dms[0].text, /^Pegá el link de un mensaje del hilo/);
   assert.deepEqual(f.calls, []);
 });
@@ -179,7 +212,7 @@ test("the first step's message goes to the thread exactly as written, and the wa
 
 test("salva's reply resumes the session once with it as an opinion; other replies are ignored; the digest goes only to the owner", async () => {
   const f = setup();
-  await askedSalva(f);
+  const dm = await askedSalva(f);
   const before = f.calls.length;
 
   assert.equal(await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.5", user: "T1", text: "yo opino otra cosa" }), true);
@@ -203,7 +236,8 @@ test("salva's reply resumes the session once with it as an opinion; other replie
     ts: "700.2",
     text: `💬 Salva respondió en ${THREAD_LINK}:\n\nSalva prefiere una tabla aparte. No cambia lo que hice; *recomiendo* moverla en otro PR.`,
     blocks: undefined,
-  });
+    threadTs: dm.ts,
+  }, "the digest lands in the owner's original DM thread");
   const job = f.store.data.jobs[ID];
   assert.deepEqual(job.state, doneJob().state, "back to the thread's own finished run");
   assert.ok(isResumable(job));
@@ -236,7 +270,7 @@ test("an owner's mention while waiting ends the wait as a normal follow-up", asy
 
 test("a plain notice is posted and the owner gets its link", async () => {
   const f = setup();
-  await handleDm(f.deps, { user: "U1", text: `${LINK} avisale a @sebas que el PR está listo` });
+  await handleDm(f.deps, ownerDm("U1", `${LINK} avisale a @sebas que el PR está listo`));
   await workerWrites("await: none\n\n<@U0SEBAS01> el PR #486 está listo para revisar.");
 
   await processBatch(f.deps, [done("w-notice")]);
@@ -266,7 +300,7 @@ test("a failed relay, a malformed file or a session that will not resume is DMed
     ["malformed file", async (f: ReturnType<typeof setup>) => (await workerWrites("<@U0SALVA01> hola sin encabezado"), processBatch(f.deps, [done("w-bad")]))],
   ] as const) {
     const f = setup();
-    await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @salva` });
+    await handleDm(f.deps, ownerDm("U1", `${LINK} preguntale a @salva`));
     await act(f);
     assert.deepEqual(f.posts, [], label);
     assert.match(f.dms.at(-1)!.text, /^❌ no pude escribir en /, label);
@@ -275,7 +309,7 @@ test("a failed relay, a malformed file or a session that will not resume is DMed
 
   const f = fakes({ async waitTuiIdle() { return false; } });
   f.deps.store.data.jobs[ID] = doneJob();
-  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @salva` });
+  await handleDm(f.deps, ownerDm("U1", `${LINK} preguntale a @salva`));
   assert.deepEqual(f.posts, []);
   assert.ok(!f.calls.some((c) => c.startsWith("followup")), "no fresh worker without the session's context");
   assert.match(f.dms.at(-1)!.text, /^❌ no pude retomar la sesión de .*no escribí nada en el hilo\.$/);
@@ -284,7 +318,7 @@ test("a failed relay, a malformed file or a session that will not resume is DMed
 
 test("a relay's statuses never reach the thread and its questions are answered without a human", async () => {
   const f = setup();
-  await handleDm(f.deps, { user: "U1", text: `${LINK} preguntale a @salva` });
+  await handleDm(f.deps, ownerDm("U1", `${LINK} preguntale a @salva`));
 
   await processBatch(f.deps, [
     { id: "s1", type: "status", body: "leyendo el PR", payload: JSON.stringify({ dispatchId: "d3" }) },

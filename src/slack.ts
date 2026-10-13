@@ -62,7 +62,7 @@ export function registerMessages(app: bolt.App, deps: BotDeps, botUserId: string
     };
     if ((msg.subtype && msg.subtype !== "file_share") || msg.bot_id || !msg.user) return;
     if (msg.channel_type === "im") {
-      handleDm(deps, { user: msg.user, text: msg.text ?? "" }).catch((err) => console.error("direct message failed:", err));
+      handleDm(deps, { user: msg.user, text: msg.text ?? "", channel: msg.channel, ts: msg.ts, threadTs: msg.thread_ts }).catch((err) => console.error("direct message failed:", err));
       return;
     }
     if (!msg.thread_ts || msg.thread_ts === msg.ts) return;
@@ -171,11 +171,11 @@ export function createSlack(config: SlackConfig) {
       if (!res.permalink) throw new Error("chat.getPermalink returned no permalink");
       return res.permalink;
     },
-    async dm(user, text, blocks) {
+    async dm(user, text, blocks, threadTs) {
       const open = await app.client.conversations.open({ users: user });
       const channel = open.channel?.id;
       if (!channel) throw new Error("conversations.open returned no channel");
-      const res = await app.client.chat.postMessage({ channel, text, blocks });
+      const res = await app.client.chat.postMessage({ channel, text, blocks, thread_ts: threadTs });
       if (!res.ts) throw new Error("chat.postMessage returned no ts");
       return { channel, ts: res.ts };
     },

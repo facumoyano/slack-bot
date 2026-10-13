@@ -31,7 +31,8 @@ export type Settled = { kind: "done"; outcome: "succeeded" | "failed"; summary: 
 export type Person = { id: string; name: string };
 
 /** An owner's private instruction for a thread, and the state the job returns to once it is carried out. */
-export type Relay = { owner: string; instruction: string; people: Person[]; unknown: UnknownName[]; link: string; after: Settled };
+/** `dmThread` is the root ts of the owner's DM thread, where every answer about this relay goes, also a day later. */
+export type Relay = { owner: string; dmThread: string; instruction: string; people: Person[]; unknown: UnknownName[]; link: string; after: Settled };
 
 /** First the worker writes the thread message; then, if a reply came, a private digest of it for the owner. */
 export type RelayStep = { kind: "write" } | { kind: "digest"; from: Person; reply: string };
@@ -87,8 +88,10 @@ export type Store = {
   pendingRoutes: Record<string, { ts: string; mention: Mention }>;
   /** Teammates' requests by `approvalId`, pending or decided. */
   approvals: Record<string, Approval>;
-  /** Per owner, the job of the thread their last DM was about; a DM without a link goes there. */
-  dmThreads: Record<string, string>;
+  /** Per owner, the job of the thread their last DM was about; a top-level DM without a link goes there. */
+  lastThreadByOwner: Record<string, string>;
+  /** Per DM thread (`<dm channel>:<root ts>`), the job it is about; a DM written inside that thread goes there. */
+  jobByDmThread: Record<string, string>;
 };
 
 export type JobEvent =
@@ -279,7 +282,7 @@ export type InboxOutcome = {
   post?: string;
   blocks?: Block[];
   release?: string;
-  dm?: { user: string; text: string };
+  dm?: { user: string; text: string; threadTs?: string };
   relayPosted?: { awaiting: string[] };
   answer?: { msgId: string; text: string };
 };
@@ -386,19 +389,19 @@ function relayOutcome(
     case "question":
       return { job, answer: { msgId: msg.id, text: NO_HUMAN } };
     case "escalation":
-      return { job, dm: { user: relay.owner, text: `⚠️ el worker escaló ${where}: ${msg.subject ?? ""}\n${msg.body ?? ""}`.trim() } };
+      return { job, dm: { user: relay.owner, threadTs: relay.dmThread, text: `⚠️ el worker escaló ${where}: ${msg.subject ?? ""}\n${msg.body ?? ""}`.trim() } };
     case "worker_done": {
       const release = payload.dispatchId;
       const sessionId = extras.sessionId;
-      const fail = (why: string) => ({ job: ended(sessionId), release, dm: { user: relay.owner, text: `❌ no pude ${step.kind === "write" ? "escribir" : "resumir la respuesta"} ${where}: ${why}` } });
+      const fail = (why: string) => ({ job: ended(sessionId), release, dm: { user: relay.owner, threadTs: relay.dmThread, text: `❌ no pude ${step.kind === "write" ? "escribir" : "resumir la respuesta"} ${where}: ${why}` } });
       if (payload.outcome !== "succeeded") return fail(summaryOf(msg) || "el worker terminó sin éxito.");
       if (!extras.relayFile) return fail("el worker no dejó el archivo con el mensaje.");
       if (step.kind === "digest") {
-        return { job: ended(sessionId), release, dm: { user: relay.owner, text: `💬 ${step.from.name} respondió ${where}:\n\n${slackPost(extras.relayFile)}` } };
+        return { job: ended(sessionId), release, dm: { user: relay.owner, threadTs: relay.dmThread, text: `💬 ${step.from.name} respondió ${where}:\n\n${slackPost(extras.relayFile)}` } };
       }
       const parsed = parseRelayFile(extras.relayFile, { people: relay.people.map((p) => p.id), unknown: relay.unknown, owner: relay.owner });
       if ("error" in parsed) return fail(parsed.error);
-      if (parsed.kind === "private") return { job: ended(sessionId), release, dm: { user: relay.owner, text: `💬 ${where}:\n\n${slackPost(parsed.text)}` } };
+      if (parsed.kind === "private") return { job: ended(sessionId), release, dm: { user: relay.owner, threadTs: relay.dmThread, text: `💬 ${where}:\n\n${slackPost(parsed.text)}` } };
       return { job: { ...job, sessionId: sessionId ?? job.sessionId }, post: slackPost(parsed.text), release, relayPosted: { awaiting: parsed.awaiting } };
     }
     default:

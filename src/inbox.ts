@@ -81,9 +81,9 @@ async function flushOutbox(deps: InboxDeps, job: Job): Promise<void> {
 async function relayPosted(deps: InboxDeps, job: Job, ts: string, awaiting: string[]): Promise<Job> {
   const next = transition(job, { kind: "relay_posted", ts, at: (deps.now ?? Date.now)(), awaiting }) ?? job;
   if (awaiting.length || job.state.kind !== "relaying") return next;
-  const { owner, link } = job.state.relay;
+  const { owner, link, dmThread } = job.state.relay;
   const posted = await deps.poster.permalink(job.slack.channel, ts).catch(() => link);
-  await deps.poster.dm(owner, `✅ listo: ${posted}`).catch((err) => console.error(`DM to ${owner} failed:`, err));
+  await deps.poster.dm(owner, `✅ listo: ${posted}`, undefined, dmThread).catch((err) => console.error(`DM to ${owner} failed:`, err));
   return next;
 }
 
@@ -120,7 +120,7 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
       if (outcome.blocks && msg.type === "question") outcome.job = transition(outcome.job, { kind: "question_posted", msgId: msg.id, ts }) ?? outcome.job;
       if (outcome.relayPosted) outcome.job = await relayPosted(deps, outcome.job, ts, outcome.relayPosted.awaiting);
     }
-    if (outcome?.dm) await deps.poster.dm(outcome.dm.user, outcome.dm.text).catch((err) => console.error(`DM to ${outcome.dm!.user} failed:`, err));
+    if (outcome?.dm) await deps.poster.dm(outcome.dm.user, outcome.dm.text, undefined, outcome.dm.threadTs).catch((err) => console.error(`DM to ${outcome.dm!.user} failed:`, err));
     if (outcome?.answer) await deps.orca.reply(outcome.answer.msgId, outcome.answer.text).catch((err) => console.error(`answering ${outcome.answer!.msgId} failed:`, err));
     const committed = outcome !== undefined && commitOutcome(deps, before, outcome);
     markProcessed(data, msg.id);

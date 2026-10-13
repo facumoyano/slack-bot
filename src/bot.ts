@@ -39,8 +39,8 @@ export type Poster = {
   uploadFile(job: Pick<Job, "slack">, path: string): Promise<void>;
   /** A link to a message, e.g. a thread's root. */
   permalink(channel: string, ts: string): Promise<string>;
-  /** A direct message from the bot to `user`; returns where it landed, for later updates. */
-  dm(user: string, text: string, blocks?: Block[]): Promise<{ channel: string; ts: string }>;
+  /** A direct message from the bot to `user`, as a reply in the DM thread `threadTs` when given; returns where it landed, for later updates. */
+  dm(user: string, text: string, blocks?: Block[], threadTs?: string): Promise<{ channel: string; ts: string }>;
 };
 
 export type BotDeps = {
@@ -88,8 +88,8 @@ export type Mention = {
 
 export type ThreadReply = { channel: string; threadTs: string; ts: string; user: string; text: string; files?: readonly unknown[] };
 
-/** A direct message to the bot. */
-export type DirectMessage = { user: string; text: string };
+/** A direct message to the bot; `threadTs` when written inside a DM thread. */
+export type DirectMessage = { user: string; text: string; channel: string; ts: string; threadTs?: string };
 
 /** Owners run work and approve; teammates' work waits for an owner; anyone else is refused. */
 export type Access = "owner" | "teammate" | "stranger";
@@ -808,25 +808,29 @@ const RELAY_USAGE = "Pegá el link de un mensaje del hilo y qué querés que hag
  */
 export async function handleDm(deps: BotDeps, dm: DirectMessage): Promise<void> {
   if (accessOf(deps, dm.user) !== "owner") return;
+  const dmThread = dm.threadTs ?? dm.ts;
   const tell = async (text: string) => {
-    await deps.poster.dm(dm.user, text).catch((err) => console.error(`DM to ${dm.user} failed:`, err));
+    await deps.poster.dm(dm.user, text, undefined, dmThread).catch((err) => console.error(`DM to ${dm.user} failed:`, err));
   };
+  const data = deps.store.data;
+  const dmKey = `${dm.channel}:${dmThread}`;
   const link = parseThreadLink(dm.text);
-  const id = link ? jobId(link.channel, link.threadTs) : deps.store.data.dmThreads[dm.user];
+  const id = link ? jobId(link.channel, link.threadTs) : ((dm.threadTs && data.jobByDmThread[dmKey]) ?? data.lastThreadByOwner[dm.user]);
   const instruction = link ? instructionOf(dm.text, link) : dm.text.trim();
   if (!id || !instruction) return tell(RELAY_USAGE);
   await starting.get(id);
-  const job = deps.store.data.jobs[id];
+  const job = data.jobs[id];
   if (!job) return tell(link ? "no tengo un trabajo en ese hilo" : "no tengo un trabajo en el último hilo que me pasaste; pegame el link de otro");
-  if (deps.store.data.dmThreads[dm.user] !== id) {
-    deps.store.data.dmThreads[dm.user] = id;
+  if (data.lastThreadByOwner[dm.user] !== id || data.jobByDmThread[dmKey] !== id) {
+    data.lastThreadByOwner[dm.user] = id;
+    data.jobByDmThread[dmKey] = id;
     deps.store.save();
   }
   const thread = await deps.poster.permalink(job.slack.channel, job.slack.threadTs).catch(() => link?.url ?? id);
   if (isActive(job)) return tell(`ese hilo está trabajando ahora; mandámelo cuando termine (${thread})`);
   if (!isResumable(job) || !job.sessionId) return tell(`no tengo una sesión que pueda retomar en ${thread}`);
   const named = await namedPeople(deps, instruction);
-  const next = commit(deps, job, { kind: "relay", relay: { owner: dm.user, instruction, ...named, link: thread } });
+  const next = commit(deps, job, { kind: "relay", relay: { owner: dm.user, dmThread, instruction, ...named, link: thread } });
   if (!next) return;
   await tell(`👌 voy con eso en ${thread}`);
   await launchRelay(deps, next);
@@ -872,7 +876,7 @@ async function launchRelayOnce(deps: BotDeps, job: Job): Promise<void> {
     console.error(`relay ${job.id}: resuming session ${job.sessionId} failed:`, err);
     commit(deps, job, { kind: "relay_ended" });
     await deps.poster
-      .dm(relay.owner, `❌ no pude retomar la sesión de ${relay.link} (${errorText(err)}), así que no escribí nada en el hilo.`)
+      .dm(relay.owner, `❌ no pude retomar la sesión de ${relay.link} (${errorText(err)}), así que no escribí nada en el hilo.`, undefined, relay.dmThread)
       .catch((dmErr) => console.error(`DM to ${relay.owner} failed:`, dmErr));
   }
 }
@@ -901,9 +905,9 @@ function namesOf(job: Job): string {
 export async function expireRelays(deps: Pick<BotDeps, "poster" | "store" | "now">, now = (deps.now ?? Date.now)()): Promise<void> {
   for (const job of dueRelayExpiries(deps.store.data, now)) {
     if (job.state.kind !== "awaiting_reply") continue;
-    const { owner, link } = job.state.relay;
+    const { owner, link, dmThread } = job.state.relay;
     const text = `⌛ ${namesOf(job)} en ${link}`;
     if (!commit(deps, job, { kind: "reply_expired" })) continue;
-    await deps.poster.dm(owner, text).catch((err) => console.error(`DM to ${owner} failed:`, err));
+    await deps.poster.dm(owner, text, undefined, dmThread).catch((err) => console.error(`DM to ${owner} failed:`, err));
   }
 }
