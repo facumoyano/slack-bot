@@ -1,3 +1,5 @@
+import { antecedentsPost, earlierWork, findAntecedents } from "./antecedents.ts";
+import type { EarlierWork } from "./antecedents.ts";
 import { ROUTE_QUESTION, answeredMessage, plainMessage, routeAskMessage, startMessage } from "./blocks.ts";
 import type { Block, Click } from "./blocks.ts";
 import { commandMode, helpText, parseCommand, parseRepoArg } from "./commands.ts";
@@ -29,6 +31,8 @@ export type Poster = {
   postTopLevel(channel: string, text: string): Promise<string>;
   /** Uploads one local file into the job's thread. */
   uploadFile(job: Pick<Job, "slack">, path: string): Promise<void>;
+  /** A link to a message, e.g. a thread's root. */
+  permalink(channel: string, ts: string): Promise<string>;
 };
 
 export type BotDeps = {
@@ -320,15 +324,35 @@ async function startJobOnce(deps: BotDeps, m: Mention, mode: Mode, intro?: strin
   const job = newJob({ ...where, repo: { owner, name, orcaRepoId }, repoSource: source, issue, request: m.text, mode, startMsg });
   deps.store.data.jobs[job.id] = job;
   deps.store.save();
+  const earlier = await announceAntecedents(deps, job);
   const files = await bringFiles(deps, where, m.files);
   await launch(deps, job, () =>
     deps.orca.startWorker({
       repoId: orcaRepoId,
       name: slug(`${name}-${issue ? `issue-${issue.number}` : "slack"}-${m.threadTs.replace(".", "").slice(-8)}`),
       title: taskTitle(job),
-      spec: buildSpec({ job, context: m.context, files, ...runPaths(deps, job.id) }),
+      spec: buildSpec({ job, context: m.context, files, earlier, ...runPaths(deps, job.id) }),
     }),
   );
+}
+
+/** Tells the thread, and returns for the spec, which other threads already worked on this job's issue or PR. */
+async function announceAntecedents(deps: BotDeps, job: Job): Promise<EarlierWork[]> {
+  const found = findAntecedents(Object.values(deps.store.data.jobs), { ...job.repo, issue: job.issue }, job.id);
+  if (!found.length) return [];
+  const earlier = await Promise.all(
+    found.map(async (j) =>
+      earlierWork(
+        j,
+        await deps.poster.permalink(j.slack.channel, j.slack.threadTs).catch((err) => {
+          console.error(`permalink of ${j.id} failed:`, err);
+          return undefined;
+        }),
+      ),
+    ),
+  );
+  await deps.poster.postToThread(job, antecedentsPost(earlier)).catch((err) => console.error(`posting antecedents in ${job.id} failed:`, err));
+  return earlier;
 }
 
 const CANCELLED_SUMMARY = "The user cancelled the previous worker before it finished. Its work so far is whatever is committed or left uncommitted in this worktree.";

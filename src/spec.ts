@@ -1,3 +1,4 @@
+import type { EarlierWork } from "./antecedents.ts";
 import type { LocalFile } from "./files.ts";
 import { PLAN_OPTIONS, isReadOnly } from "./jobs.ts";
 import type { Job, Mode } from "./jobs.ts";
@@ -19,6 +20,8 @@ export type SpecInput = {
   files?: readonly LocalFile[];
   /** Absolute folder whose files the bot uploads to the thread. */
   outbox: string;
+  /** Earlier jobs in other Slack threads on this same target, newest first. */
+  earlier?: readonly EarlierWork[];
 };
 
 const FENCE = "=====";
@@ -49,6 +52,24 @@ function previousWork(input: SpecInput): string[] {
     `A previous worker already worked on this request in this same worktree and branch. Continue from its result${isReadOnly(input.job.mode) ? "" : "; update the existing PR instead of opening a new one when there is one"}.`,
     input.previousPrUrl ? `Existing PR: ${input.previousPrUrl}` : "No PR was opened by the previous worker.",
     untrusted("PREVIOUS SUMMARY", input.previousSummary),
+  ];
+}
+
+const MAX_EARLIER_SUMMARY = 1500;
+
+function earlierWork(earlier: readonly EarlierWork[] = []): string[] {
+  if (!earlier.length) return [];
+  return [
+    "",
+    "## Earlier work in other Slack threads",
+    "Earlier bot runs in other Slack threads already worked on this same issue or PR, newest first. Use them as context, and check the repository and GitHub for the current state yourself.",
+    ...earlier.flatMap((w, i) => {
+      const summary = w.summary && w.summary.length > MAX_EARLIER_SUMMARY ? `${w.summary.slice(0, MAX_EARLIER_SUMMARY)}…` : w.summary;
+      return [
+        `${i + 1}. Mode ${w.mode}, outcome ${w.outcome}, PR ${w.prUrl ?? "none"}${w.permalink ? `, thread ${w.permalink}` : ""}.`,
+        untrusted(`EARLIER SUMMARY ${i + 1}`, summary || "(no summary)"),
+      ];
+    }),
   ];
 }
 
@@ -204,6 +225,7 @@ export function buildSpec(input: SpecInput): string {
     ...(input.context ? [untrusted("SLACK THREAD ROOT", input.context)] : []),
     ...attachedFiles(input.files),
     ...previousWork(input),
+    ...earlierWork(input.earlier),
     "",
     "## Files for the human",
     `To show the human something (screenshots or a short video of a UI change, a generated deck or PDF, a log or CSV), save the file in \`${input.outbox}\` (outside the repo; never commit it). The bot uploads every file there to the Slack thread with your next question, status or final report. Only put files the human benefits from seeing there, and never secrets. When the change touches UI and the repo can run it, a screenshot of the result there is welcome evidence.`,

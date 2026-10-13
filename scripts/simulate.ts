@@ -83,6 +83,11 @@ const poster: Poster = {
   async uploadFile(_job, path) {
     console.log(`[${ts()}] [archivo] ${basename(path)} (${(await stat(path)).size} bytes)`);
   },
+  async permalink(channel, messageTs) {
+    const link = `https://slack.example/archives/${channel}/p${messageTs.replace(".", "")}`;
+    console.log(`[${ts()}] [slack permalink de ${channel}/${messageTs}] ${link}`);
+    return link;
+  },
 };
 
 const command = parseCommand(request);

@@ -46,6 +46,9 @@ export function fakes(over: Partial<Orca> = {}) {
       if (failUploads.has(path)) throw new Error("upload_failed");
       uploads.push(path);
     },
+    async permalink(channel, ts) {
+      return `https://slack.test/${channel}/${ts}`;
+    },
   };
   const orca: Orca = {
     async startWorker(o) {
