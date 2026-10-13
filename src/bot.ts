@@ -7,7 +7,7 @@ import type { Block, Click } from "./blocks.ts";
 import { commandMode, helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
 import { mkdir } from "node:fs/promises";
-import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
+import { downloadFiles, inboxDir, jobSlug, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
 import type { LocalFile } from "./files.ts";
 import { PLAN_OPTIONS, activeJobInDir, awaitsReply, dueRelayExpiries, isActive, isOtherTask, isResumable, jobId, jobLabel, lastRun, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
 import type { Job, JobEvent, LocalDir, Mode, Person, RepoRef } from "./jobs.ts";
@@ -54,7 +54,7 @@ export type BotDeps = {
   resolveDir(path: string): Promise<string>;
   /** GitHub repos Orca already has, for `!repo` and the change-repo picker. */
   knownRepos(): Promise<KnownRepo[]>;
-  latestSession(worktreePath: string): Promise<string | undefined>;
+  latestSession(worktreePath: string, marker?: string): Promise<string | undefined>;
   /** The owners: they start work without asking and approve everyone else's. */
   allowedUsers: ReadonlySet<string>;
   /** Teammates whose requests run only after an owner approves them by DM. */
@@ -724,7 +724,7 @@ async function cancel(deps: BotDeps, m: Pick<Mention, "channel" | "threadTs" | "
   const worktreeId = job.worktreeId;
   const [sessionId, branch] = worktreeId
     ? await Promise.all([
-        deps.latestSession(worktreePath(worktreeId)).catch(() => undefined),
+        deps.latestSession(worktreePath(worktreeId), jobSlug(job.id)).catch(() => undefined),
         deps.orca.currentBranch(worktreeId).catch(() => undefined),
       ])
     : [];

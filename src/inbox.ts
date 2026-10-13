@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { outboxDir, outboxFiles, retire } from "./files.ts";
+import { jobSlug, outboxDir, outboxFiles, retire } from "./files.ts";
 import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
 import { expireApprovals, expireRelays, retireStart, startsSettled } from "./bot.ts";
@@ -14,7 +14,7 @@ export type InboxDeps = {
   orca: Pick<Orca, "checkInbox" | "release" | "lookupPrUrl" | "reply" | "changedFiles">;
   poster: Poster;
   store: StoreHandle;
-  latestSession(worktreePath: string): Promise<string | undefined>;
+  latestSession(worktreePath: string, marker?: string): Promise<string | undefined>;
   /** Where each job's `out/` folder lives. */
   filesRoot: string;
   now?(): number;
@@ -62,7 +62,7 @@ async function sessionOf(deps: InboxDeps, msg: InboxMessage): Promise<string | u
   if (msg.type !== "worker_done") return undefined;
   const job = findJobByDispatch(deps.store.data, parsePayload(msg).dispatchId);
   if (!job?.worktreeId) return undefined;
-  return deps.latestSession(worktreePath(job.worktreeId)).catch((err) => {
+  return deps.latestSession(worktreePath(job.worktreeId), jobSlug(job.id)).catch((err) => {
     console.error(`session lookup for ${job.id} failed:`, err);
     return undefined;
   });
