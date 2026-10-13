@@ -172,7 +172,7 @@ test("a follow-up on a job with a session resumes that exact session with a resu
   await handleMention(f.deps, followUpMention);
 
   const job = f.store.data.jobs["C1:100.1"];
-  assert.deepEqual(f.calls, ["terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
+  assert.deepEqual(f.calls, ["terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
   assert.match(f.specs[0], /continuing your own previous work on this request, in this same Claude session/);
   assert.equal(job.state.kind, "working");
   assert.equal(job.dispatchId, "d3");
@@ -189,7 +189,7 @@ test("when the resumed session cannot take the task, its terminal is closed and 
 
   await handleMention(f.deps, followUpMention);
 
-  assert.deepEqual(f.calls.slice(1), ["wait term-1", "close term-1", "followup r1::/wt/api"]);
+  assert.deepEqual(f.calls.slice(1), ["wait term-1", "close term-1", "followup path:/wt/api"]);
   assert.match(f.specs[0], /BEGIN PREVIOUS SUMMARY[\s\S]*Memoricé la palabra/);
   assert.equal(f.store.data.jobs["C1:100.1"].dispatchId, "d2");
   assert.ok(f.posts.some((p) => p.startsWith("⚠️ no pude retomar la sesión anterior")), "the thread is told the session was not resumed");
@@ -208,7 +208,7 @@ test("a resumed Claude that never goes idle gets one longer wait, then the fresh
   await handleMention(f.deps, followUpMention);
 
   assert.deepEqual(waits, [60_000, 120_000]);
-  assert.deepEqual(f.calls.slice(1), ["close term-1", "followup r1::/wt/api"]);
+  assert.deepEqual(f.calls.slice(1), ["close term-1", "followup path:/wt/api"]);
 });
 
 test("a follow-up without a recorded session starts a fresh worker", async () => {
@@ -217,7 +217,7 @@ test("a follow-up without a recorded session starts a fresh worker", async () =>
 
   await handleMention(f.deps, followUpMention);
 
-  assert.deepEqual(f.calls, ["followup r1::/wt/api"]);
+  assert.deepEqual(f.calls, ["followup path:/wt/api"]);
 });
 
 const issue = (owner: string, name: string, n: number) => ({
@@ -455,7 +455,7 @@ test("a mention after a cancel resumes the cancelled worker's session", async ()
   await handleMention(f.deps, { ...followUpMention, text: "seguí, pero sin tocar el login" });
 
   const job = f.store.data.jobs["C1:100.1"];
-  assert.deepEqual(f.calls.slice(1), ["terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
+  assert.deepEqual(f.calls.slice(1), ["terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
   assert.equal(job.state.kind, "working");
   assert.equal(job.request, "seguí, pero sin tocar el login");
 });

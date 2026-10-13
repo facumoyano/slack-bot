@@ -58,7 +58,7 @@ test("a plain mention after an investigation resumes the same session as a chang
   const job = f.store.data.jobs["C1:100.1"];
   assert.equal(job.mode, "change");
   assert.equal(job.request, "ahora arreglalo");
-  assert.ok(f.calls.includes("terminal r1::/wt/api claude --dangerously-skip-permissions --resume sess-1"), "resumes the investigation's session");
+  assert.ok(f.calls.includes("terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1"), "resumes the investigation's session");
   assert.equal(f.posts.at(-1), "🫡 sigo en la misma sesión. Te aviso por acá.");
   const spec = f.specs.at(-1)!;
   assert.match(spec, /continuing your own previous work/);
@@ -214,4 +214,68 @@ test("the report keeps labels that start with Pr while its PR line is dropped", 
   await processBatch(f.deps, [done("m1", "Listo.")]);
 
   assert.equal(f.posts[0], "🔎 <@U1> listo.\n\n*Pregunta*\n\n¿Qué hay?\n\n*Pruebas*\n\nNinguna.");
+});
+
+test("!revisa #n starts a read-only review of that PR on the thread's repo, announced with 🔍", async () => {
+  const f = fakes();
+
+  await handleMention(f.deps, mention({ command: "revisa", text: "#7 mirá el manejo de errores", target: { owner: "acme", name: "api", source: "channel" } }));
+
+  const job = f.store.data.jobs["C1:100.1"];
+  assert.equal(job.mode, "review");
+  assert.deepEqual(job.issue, { number: 7, url: "https://github.com/acme/api/pull/7" });
+  assert.match(f.posts[0], /^🔍 reviso acme\/api#7 \(repo del canal\)…$/);
+  assert.match(f.specs[0], /read-only review of an existing pull request/);
+  assert.doesNotMatch(f.specs[0], /gh pr create/);
+});
+
+test("!revisa without a PR asks for one and starts nothing", async () => {
+  const f = fakes();
+
+  await handleMention(f.deps, mention({ command: "revisa", text: "fijate si está bien" }));
+
+  assert.deepEqual(f.calls, []);
+  assert.match(f.posts[0], /no sé qué PR revisar/);
+});
+
+test("a review's worker_done posts 🔍 revisé <PR> with the report and a Ver PR button to the reviewed PR", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = { ...workingJob(), mode: "review", issue: { number: 7, url: "https://github.com/acme/api/pull/7" } };
+
+  await processBatch(f.deps, [done("m1", "Veredicto: cambios menores.")]);
+
+  const post = f.messages[0];
+  assert.equal(post.text, "🔍 <@U1> revisé acme/api#7.\n\nVeredicto: cambios menores.");
+  assert.deepEqual(
+    buttonsOf(post).map((b) => [b.text.text, b.url]),
+    [["Ver PR", "https://github.com/acme/api/pull/7"]],
+  );
+});
+
+test("a change that ends succeeded without a PR posts ✅ listo, with no PR line and no button", async () => {
+  const f = fakes({
+    async lookupPrUrl() {
+      return undefined;
+    },
+  });
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await processBatch(f.deps, [done("m1", "No hacía falta código: el login ya valida el token.")]);
+
+  const post = f.messages[0];
+  assert.equal(post.text, "✅ <@U1> listo.\n\nNo hacía falta código: el login ya valida el token.");
+  assert.equal(post.blocks, undefined);
+});
+
+test("a change that fails without a PR still says ❌ and No se abrió PR", async () => {
+  const f = fakes({
+    async lookupPrUrl() {
+      return undefined;
+    },
+  });
+  f.store.data.jobs["C1:100.1"] = workingJob();
+
+  await processBatch(f.deps, [{ ...done("m1", "Los tests no corren."), payload: JSON.stringify({ dispatchId: "d1", outcome: "failed" }) }]);
+
+  assert.equal(f.messages[0].text, "❌ <@U1> no pude completarlo.\n\nLos tests no corren.\n\nNo se abrió PR.");
 });

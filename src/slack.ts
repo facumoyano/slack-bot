@@ -82,6 +82,11 @@ export function createSlack(config: SlackConfig) {
     async uploadFile(job, path) {
       await app.client.filesUploadV2({ channel_id: job.slack.channel, thread_ts: job.slack.threadTs, file: path, filename: basename(path) });
     },
+    async permalink(channel, ts) {
+      const res = await app.client.chat.getPermalink({ channel, message_ts: ts });
+      if (!res.permalink) throw new Error("chat.getPermalink returned no permalink");
+      return res.permalink;
+    },
   };
   const fetchFile = (url: string) => fetch(url, { headers: { Authorization: `Bearer ${config.botToken}` } });
 

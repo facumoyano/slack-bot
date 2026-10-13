@@ -46,6 +46,9 @@ export function fakes(over: Partial<Orca> = {}) {
       if (failUploads.has(path)) throw new Error("upload_failed");
       uploads.push(path);
     },
+    async permalink(channel, ts) {
+      return `https://slack.test/${channel}/${ts}`;
+    },
   };
   const orca: Orca = {
     async startWorker(o) {
@@ -54,12 +57,12 @@ export function fakes(over: Partial<Orca> = {}) {
       return { taskId: "t1", dispatchId: "d1", worktreeId: "r1::/wt/api" };
     },
     async startFollowUp(o) {
-      calls.push(`followup ${o.worktreeId}`);
+      calls.push(`followup ${o.worktree}`);
       specs.push(o.spec);
-      return { taskId: "t2", dispatchId: "d2", worktreeId: o.worktreeId };
+      return { taskId: "t2", dispatchId: "d2" };
     },
     async createTerminal(o) {
-      calls.push(`terminal ${o.worktreeId} ${o.command}`);
+      calls.push(`terminal ${o.worktree} ${o.command}`);
       return "term-1";
     },
     async waitTuiIdle(handle) {
@@ -72,7 +75,7 @@ export function fakes(over: Partial<Orca> = {}) {
     async startWorkerInTerminal(o) {
       calls.push(`resume ${o.handle}`);
       specs.push(o.spec);
-      return { taskId: "t3", dispatchId: "d3", worktreeId: o.worktreeId };
+      return { taskId: "t3", dispatchId: "d3" };
     },
     async stopWorker(id) {
       calls.push(`stop ${id}`);

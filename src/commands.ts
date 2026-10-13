@@ -13,6 +13,13 @@ const COMMANDS = [
     mode: "investigate",
   },
   { name: "plan", aliases: ["plan", "planear"], usage: "!plan <pedido>", help: "te muestro un plan para aprobar antes de tocar código; con tu ok sigo hasta el PR", mode: "plan" },
+  {
+    name: "revisa",
+    aliases: ["revisa", "review", "revisar"],
+    usage: "!revisa <PR> [qué mirar]",
+    help: "reviso un PR (link, `#número` u `owner/repo#n`) sin tocarlo y te dejo veredicto y hallazgos; si lo pedís, dejo el review como comentario en GitHub",
+    mode: "review",
+  },
   { name: "repo", aliases: ["repo"], usage: "!repo [repo | borrar]", help: "muestra, fija o borra el repo por defecto de este canal" },
   { name: "parar", aliases: ["parar", "cancelar", "stop"], usage: "!parar", help: "freno el trabajo de este hilo; la rama queda para retomarla" },
   { name: "aparte", aliases: ["aparte", "aside"], usage: "!aparte …", help: "ignoro ese mensaje, con o sin mención (para hablar entre ustedes en el hilo)" },
@@ -23,7 +30,7 @@ export type CommandName = (typeof COMMANDS)[number]["name"];
 
 export type Command = { name: CommandName; rest: string };
 
-/** The kind of worker run a mention starts; anything but a mode command is a change. */
+/** The kind of worker run a command starts; any other command, and a plain mention when it is not routed, is a change. */
 export function commandMode(name: CommandName | undefined): Mode {
   const found = COMMANDS.find((c) => c.name === name);
   return found && "mode" in found ? found.mode : "change";
@@ -46,7 +53,7 @@ export function parseCommand(text: string): Command | undefined {
 
 export function helpText(): string {
   const lines = COMMANDS.map((c) => `• \`${c.usage}\`${c.aliases.length > 1 ? ` (${c.aliases.slice(1).map((a) => `\`!${a}\``).join(", ")})` : ""}: ${c.help}`);
-  return ["Comandos, al principio de la mención:", ...lines, "Sin comando, te tomo el pedido como tarea en este hilo.", "Podés adjuntar imágenes o archivos al pedido o en el hilo; los que genere el worker los subo acá."].join("\n");
+  return ["Comandos, al principio de la mención:", ...lines, "Sin comando, entiendo qué pedís (un cambio, una pregunta, una investigación, una revisión o un plan); si no me queda claro, te pregunto con botones. Un comando siempre gana.", "Podés adjuntar imágenes o archivos al pedido o en el hilo; los que genere el worker los subo acá."].join("\n");
 }
 
 export type RepoArg = { kind: "show" } | { kind: "clear" } | { kind: "set"; repo: RepoRef } | { kind: "unknown"; text: string };

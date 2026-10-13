@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { doneMessage, planMessage, questionMessage } from "./blocks.ts";
 import type { Block, Message } from "./blocks.ts";
+import type { Mention } from "./bot.ts";
 
 export type JobState =
   | { kind: "starting" }
@@ -22,8 +23,13 @@ export type RepoSource = "link" | "name" | "channel" | "inferred";
 
 export type RepoRef = { owner: string; name: string };
 
-/** What a worker run delivers: a PR, a cited report with no PR, or a PR after the human approves a plan. */
-export type Mode = "change" | "investigate" | "plan";
+/** What a worker run delivers: a PR, a cited report with no PR, a PR after the human approves a plan, or a read-only review of an existing PR. */
+export type Mode = "change" | "investigate" | "plan" | "review";
+
+/** Modes whose worker never commits, pushes or opens a PR. */
+export function isReadOnly(mode: Mode): boolean {
+  return mode === "investigate" || mode === "review";
+}
 
 /** The options of a plan-mode approval question. `Cambiar` asks the human to type the change. */
 export const PLAN_OPTIONS = { approve: "Aprobar", change: "Cambiar" } as const;
@@ -57,6 +63,8 @@ export type Store = {
   processedMsgIds: string[];
   /** Each channel's `!repo` default. */
   channels: Record<string, RepoRef>;
+  /** Per thread, the mention whose route the bot asked the human to pick, and the message holding the buttons. */
+  pendingRoutes: Record<string, { ts: string; mention: Mention }>;
 };
 
 export type JobEvent =
@@ -202,9 +210,34 @@ function hash(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function doneHead(mode: Mode, outcome: "succeeded" | "failed", who: string): string {
-  if (outcome === "failed") return `❌ ${who} no pude completarlo.`;
-  return mode === "investigate" ? `🔎 ${who} listo.` : `✅ ${who} terminé.`;
+/** The PR a review looked at: the job's own target when it is a pull request, else the one the worker reported. */
+function reviewedPr(job: Job, prUrl: string | undefined): string | undefined {
+  return job.issue?.url.includes("/pull/") ? job.issue.url : prUrl;
+}
+
+function prLabel(url: string): string {
+  const m = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(url);
+  return m ? `${m[1]}/${m[2]}#${m[3]}` : url;
+}
+
+function doneMessageFor(job: Job, outcome: "succeeded" | "failed", summary: string, prUrl: string | undefined): Message {
+  const who = `<@${job.slack.requester}>`;
+  const failed = `❌ ${who} no pude completarlo.`;
+  switch (job.mode) {
+    case "review": {
+      const pr = reviewedPr(job, prUrl);
+      return doneMessage(`${outcome === "failed" ? failed : `🔍 ${who} revisé ${pr ? prLabel(pr) : jobLabel(job)}.`}\n\n${summary}`, pr);
+    }
+    // An investigation's PR, if the thread has one from an earlier run, stays recorded for the next follow-up but is not this run's news.
+    case "investigate":
+      return doneMessage(`${outcome === "failed" ? failed : `🔎 ${who} listo.`}\n\n${summary}`);
+    case "change":
+    case "plan":
+      if (outcome === "failed") return doneMessage(`${failed}\n\n${summary}\n\n${prUrl ? `*PR:* ${prUrl}` : "No se abrió PR."}`, prUrl);
+      // A change that turned out to need no code (a review or a question) succeeds without a PR.
+      if (!prUrl) return doneMessage(`✅ ${who} listo.\n\n${summary}`);
+      return doneMessage(`✅ ${who} terminé.\n\n${summary}\n\n*PR:* ${prUrl}`, prUrl);
+  }
 }
 
 /**
@@ -246,12 +279,7 @@ export function applyInboxMessage(store: Store, msg: InboxMessage, extras: Extra
       const prUrl = extractPrUrl(msg.body ?? "") ?? extractPrUrl(report ?? "") ?? extras.prUrlFallback;
       const next = transition(job, { kind: "worker_done", outcome, summary, prUrl, sessionId });
       if (!next) return undefined;
-      const head = doneHead(job.mode, outcome, who);
-      // An investigation's PR, if the thread has one from an earlier run, stays recorded for the next follow-up but is not this run's news.
-      const { text, blocks } =
-        job.mode === "investigate"
-          ? doneMessage(`${head}\n\n${summary}`)
-          : doneMessage(`${head}\n\n${summary}\n\n${prUrl ? `*PR:* ${prUrl}` : "No se abrió PR."}`, prUrl);
+      const { text, blocks } = doneMessageFor(job, outcome, summary, prUrl);
       return { job: next, post: text, blocks, release: payload.dispatchId };
     }
     default:

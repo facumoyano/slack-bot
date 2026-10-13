@@ -54,6 +54,13 @@ function norm(text: string): string {
   return text.toLowerCase().replaceAll("_", "-");
 }
 
+/** The repos Alfred lists and infers from: those named in `allowed` (by repo or Orca display name), or all when it is empty. */
+export function limitRepos(repos: readonly KnownRepo[], allowed: readonly string[]): KnownRepo[] {
+  if (!allowed.length) return [...repos];
+  const wanted = new Set(allowed.map(norm));
+  return repos.filter((r) => wanted.has(norm(r.name)) || wanted.has(norm(`${r.owner}/${r.name}`)) || (r.displayName !== undefined && wanted.has(norm(r.displayName))));
+}
+
 /** Bare repo names ("fyso-backend") resolved against repos Orca already has; `-` and `_` count as equal. */
 export function matchKnownRepo(texts: readonly string[], repos: readonly KnownRepo[]): GithubTarget | undefined {
   for (const text of texts) {
@@ -62,6 +69,19 @@ export function matchKnownRepo(texts: readonly string[], repos: readonly KnownRe
     if (repo) return { owner: repo.owner, name: repo.name };
   }
   return undefined;
+}
+
+const BARE_NUMBER = /(?:^|[\s(])#(\d+)\b/;
+
+/**
+ * The pull request a review targets, as a `/pull/` URL: a bare `#n` in the request names it on the target's repo,
+ * else the target's own number. Undefined when neither names one.
+ */
+export function pullTarget(target: FoundTarget, request: string): FoundTarget | undefined {
+  const bare = BARE_NUMBER.exec(request);
+  const number = bare ? Number(bare[1]) : target.issue?.number;
+  if (number === undefined) return undefined;
+  return { ...target, issue: { number, url: `https://github.com/${target.owner}/${target.name}/pull/${number}` } };
 }
 
 /** A link or `owner/repo#n` first, then an exact known repo name. Claude's guess is the caller's last resort. */
