@@ -73,3 +73,13 @@ test("long text is split into sections under Slack's limit without losing a char
   assert.deepEqual(sections.map((s) => s.length), [2500, 2500, 3000, 3000, 1000]);
   assert.equal(sections.join(""), text.replaceAll("\n", ""));
 });
+
+test("a long report reaches Slack whole, split into sections", async () => {
+  const { slackPost } = await import("../src/report.ts");
+  const report = Array.from({ length: 120 }, (_, i) => `- hallazgo ${i}: ${"detalle ".repeat(8)}`).join("\n") + "\n- No confirmé la intención del PR.";
+  const posted = doneMessage(slackPost(report), "https://github.com/o/r/pull/1");
+  assert.ok(posted.text.endsWith("No confirmé la intención del PR."));
+  const sections = posted.blocks!.filter((b) => b.type === "section");
+  assert.ok(sections.length > 1);
+  assert.equal(sections.map((b) => (b as { text: { text: string } }).text.text).join("\n"), posted.text);
+});

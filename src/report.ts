@@ -1,5 +1,6 @@
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { MESSAGE_MAX } from "./blocks.ts";
 import { jobSlug } from "./files.ts";
 
 const REPORT_DIR = join(import.meta.dirname, "..", "data", "reports");
@@ -36,12 +37,10 @@ function inline(line: string): string {
     .replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_, a, b) => `*${a ?? b}*`);
 }
 
-const MAX_POST = 3500;
-
-/** Agent Markdown as a Slack post, cut to fit one message. */
+/** Agent Markdown as a Slack post; only a report past Slack's message limit is cut. */
 export function slackPost(markdown: string): string {
   const text = toSlackMrkdwn(markdown);
-  return text.length > MAX_POST ? `${text.slice(0, MAX_POST)}…` : text;
+  return text.length > MESSAGE_MAX ? `${text.slice(0, MESSAGE_MAX)}…` : text;
 }
 
 /** Markdown as agents write it, rendered with Slack's mrkdwn dialect. Code fences pass through untouched. */
