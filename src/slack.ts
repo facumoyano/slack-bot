@@ -1,12 +1,13 @@
 import { basename } from "node:path";
 import bolt from "@slack/bolt";
 import { ACTION_PREFIX, parseClick } from "./blocks.ts";
-import { accessOf, handleClick, handleMention, handleThreadReply } from "./bot.ts";
+import { accessOf, handleClick, handleDm, handleMention, handleThreadReply } from "./bot.ts";
 import type { BotDeps, Poster } from "./bot.ts";
 import { parseCommand } from "./commands.ts";
 import { messageFiles } from "./files.ts";
 import { chooseTarget, findTarget, messageTexts, stripMention } from "./parse.ts";
 import { resolveWithClaude } from "./resolve.ts";
+import type { SlackUser } from "./thread.ts";
 
 export type SlackConfig = { botToken: string; appToken: string };
 
@@ -42,12 +43,29 @@ export function registerActions(app: bolt.App, deps: BotDeps, readThread: (chann
   });
 }
 
-/** Plain thread replies, a file upload included, reach the active job of their thread. */
+/**
+ * Direct messages are owners' private instructions. Plain thread replies, a file upload included, reach their thread's job;
+ * anyone's, since a relay may wait on someone with no access, and the job decides whose counts.
+ */
 export function registerMessages(app: bolt.App, deps: BotDeps, botUserId: string): void {
   app.event("message", async ({ event }) => {
-    const msg = event as { subtype?: string; bot_id?: string; user?: string; text?: string; thread_ts?: string; ts: string; channel: string; files?: unknown[] };
-    if ((msg.subtype && msg.subtype !== "file_share") || msg.bot_id || !msg.user || !msg.thread_ts || msg.thread_ts === msg.ts) return;
-    if (accessOf(deps, msg.user) === "stranger") return;
+    const msg = event as {
+      subtype?: string;
+      bot_id?: string;
+      user?: string;
+      text?: string;
+      thread_ts?: string;
+      ts: string;
+      channel: string;
+      channel_type?: string;
+      files?: unknown[];
+    };
+    if ((msg.subtype && msg.subtype !== "file_share") || msg.bot_id || !msg.user) return;
+    if (msg.channel_type === "im") {
+      handleDm(deps, { user: msg.user, text: msg.text ?? "" }).catch((err) => console.error("direct message failed:", err));
+      return;
+    }
+    if (!msg.thread_ts || msg.thread_ts === msg.ts) return;
     if (msg.text?.includes(`<@${botUserId}>`)) return;
     handleThreadReply(deps, { channel: msg.channel, threadTs: msg.thread_ts, ts: msg.ts, user: msg.user, text: msg.text ?? "", files: msg.files }).catch((err) =>
       console.error("thread reply failed:", err),
@@ -100,6 +118,27 @@ export function registerMentions(app: bolt.App, deps: BotDeps, readThread: (chan
   });
 }
 
+export async function listUsers(client: bolt.webApi.WebClient): Promise<SlackUser[]> {
+  const users: SlackUser[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await client.users.list({ limit: 200, cursor });
+    for (const u of page.members ?? []) {
+      if (!u.id) continue;
+      users.push({
+        id: u.id,
+        name: u.name ?? "",
+        displayName: u.profile?.display_name ?? "",
+        realName: u.real_name ?? u.profile?.real_name ?? "",
+        isBot: !!u.is_bot || u.id === "USLACKBOT",
+        deleted: !!u.deleted,
+      });
+    }
+    cursor = page.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+  return users;
+}
+
 export function createSlack(config: SlackConfig) {
   const app = new bolt.App({ token: config.botToken, appToken: config.appToken, socketMode: true });
   const poster: Poster = {
@@ -143,11 +182,11 @@ export function createSlack(config: SlackConfig) {
   };
   const fetchFile = (url: string) => fetch(url, { headers: { Authorization: `Bearer ${config.botToken}` } });
 
-  async function start(deps: Omit<BotDeps, "poster" | "botUserId" | "fetchFile">): Promise<void> {
+  async function start(deps: Omit<BotDeps, "poster" | "botUserId" | "fetchFile" | "users">): Promise<void> {
     const auth = await app.client.auth.test();
     const botUserId = auth.user_id as string;
     const botId = auth.bot_id as string | undefined;
-    const full: BotDeps = { ...deps, poster, botUserId, fetchFile };
+    const full: BotDeps = { ...deps, poster, botUserId, fetchFile, users: () => listUsers(app.client) };
 
     /** Each earlier human message, newest first: a link posted later (often by another bot) beats the root. */
     async function readThread(channel: string, threadTs: string, exceptTs?: string): Promise<ThreadMessage[]> {
