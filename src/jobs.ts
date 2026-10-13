@@ -78,7 +78,7 @@ export type JobEvent =
   | { kind: "answered" }
   | { kind: "worker_done"; outcome: "succeeded" | "failed"; summary: string; prUrl?: string; sessionId?: string }
   | { kind: "cancelled"; sessionId?: string }
-  | { kind: "follow_up"; request: string; mode: Mode }
+  | { kind: "follow_up"; request: string; mode: Mode; requester: string }
   | { kind: "superseded"; reason: string };
 
 export function jobId(channel: string, threadTs: string): string {
@@ -155,6 +155,7 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
       if (from !== "done" && from !== "cancelled") return undefined;
       return {
         ...job,
+        slack: { ...job.slack, requester: ev.requester },
         request: ev.request,
         mode: ev.mode,
         planHash: undefined,

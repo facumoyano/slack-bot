@@ -19,7 +19,9 @@ function requireEnv(name: string): string {
 
 const botToken = requireEnv("SLACK_BOT_TOKEN");
 const appToken = requireEnv("SLACK_APP_TOKEN");
-const allowedUsers = new Set(requireEnv("ALLOWED_SLACK_USERS").split(",").map((s) => s.trim()).filter(Boolean));
+const userIds = (value: string | undefined) => new Set((value ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+const allowedUsers = userIds(requireEnv("ALLOWED_SLACK_USERS"));
+const approvalUsers = userIds(process.env.APPROVAL_SLACK_USERS);
 
 const allowedRepos = (process.env.ALFRED_REPOS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const knownRepos = async () => limitRepos(await knownGithubRepos(), allowedRepos);
@@ -34,5 +36,5 @@ store.save();
 console.log(`orca: bound to run ${store.data.runId}`);
 
 const slack = createSlack({ botToken, appToken });
-await slack.start({ orca: realOrca, store, resolveRepo: findRepo, knownRepos, allowedUsers, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, classify });
+await slack.start({ orca: realOrca, store, resolveRepo: findRepo, knownRepos, allowedUsers, approvalUsers, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, classify });
 await runInbox({ orca: realOrca, poster: slack.poster, store, latestSession, filesRoot: FILES_ROOT });

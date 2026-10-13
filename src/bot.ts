@@ -1,6 +1,8 @@
+import { approvalId, decide, dueExpiries } from "./approvals.ts";
+import type { Approval, Decision, Work } from "./approvals.ts";
 import { antecedentsPost, earlierWork, findAntecedents } from "./antecedents.ts";
 import type { EarlierWork } from "./antecedents.ts";
-import { ROUTE_QUESTION, answeredMessage, plainMessage, routeAskMessage, startMessage } from "./blocks.ts";
+import { ROUTE_QUESTION, answeredMessage, approvalCard, plainMessage, routeAskMessage, startMessage } from "./blocks.ts";
 import type { Block, Click } from "./blocks.ts";
 import { commandMode, helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
@@ -15,7 +17,7 @@ import { pullTarget } from "./parse.ts";
 import type { FoundTarget, KnownRepo } from "./parse.ts";
 import { clearReports, planPath, reportPath, slackPost } from "./report.ts";
 import { BUTTON_LABELS, decideRoute, routeHint, routeState } from "./route.ts";
-import type { AskableRoute, Decision, RouteAnswer, RouteState } from "./route.ts";
+import type { Decision as RouteDecision, RouteAnswer, RouteState } from "./route.ts";
 import { buildSpec, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
 
@@ -33,6 +35,8 @@ export type Poster = {
   uploadFile(job: Pick<Job, "slack">, path: string): Promise<void>;
   /** A link to a message, e.g. a thread's root. */
   permalink(channel: string, ts: string): Promise<string>;
+  /** A direct message from the bot to `user`; returns where it landed, for later updates. */
+  dm(user: string, text: string, blocks?: Block[]): Promise<{ channel: string; ts: string }>;
 };
 
 export type BotDeps = {
@@ -43,8 +47,11 @@ export type BotDeps = {
   /** GitHub repos Orca already has, for `!repo` and the change-repo picker. */
   knownRepos(): Promise<KnownRepo[]>;
   latestSession(worktreePath: string): Promise<string | undefined>;
-  /** Who may start work and click buttons. */
+  /** The owners: they start work without asking and approve everyone else's. */
   allowedUsers: ReadonlySet<string>;
+  /** Teammates whose requests run only after an owner approves them by DM. */
+  approvalUsers: ReadonlySet<string>;
+  now?(): number;
   /** Answers a question read-only from a repo checkout, as Markdown. */
   ask(o: { repoPath: string; question: string; thread?: string; files?: readonly LocalFile[] }): Promise<string>;
   botUserId?: string;
@@ -74,6 +81,22 @@ export type Mention = {
 };
 
 export type ThreadReply = { channel: string; threadTs: string; ts: string; user: string; text: string; files?: readonly unknown[] };
+
+/** Owners run work and approve; teammates' work waits for an owner; anyone else is refused. */
+export type Access = "owner" | "teammate" | "stranger";
+
+export function accessOf(deps: Pick<BotDeps, "allowedUsers" | "approvalUsers">, user: string): Access {
+  return deps.allowedUsers.has(user) ? "owner" : deps.approvalUsers.has(user) ? "teammate" : "stranger";
+}
+
+/** An owner, or the requester the job runs for, may answer, guide and stop it. */
+function mayDrive(deps: BotDeps, job: Job, user: string): boolean {
+  return accessOf(deps, user) === "owner" || job.slack.requester === user;
+}
+
+function refusal(user: string): string {
+  return `Perdón <@${user}>, no tengo permiso para trabajar para vos. Pedile al dueño del bot que agregue tu ID \`${user}\` a ALLOWED_SLACK_USERS.`;
+}
 
 /** A validated button or select click, located by the message it came from. */
 export type ClickInput = { click: Click; user: string; channel: string; threadTs: string; messageTs: string; context?: string; files?: readonly unknown[] };
@@ -126,32 +149,126 @@ async function bringFiles(deps: BotDeps, where: Pick<Job, "slack">, raw: readonl
 }
 
 export async function handleMention(deps: BotDeps, m: Mention): Promise<void> {
+  const access = accessOf(deps, m.user);
+  if (access === "stranger") return deps.poster.postToThread(threadOf(m), refusal(m.user));
+  const id = jobId(m.channel, m.threadTs);
+  const existing = deps.store.data.jobs[id];
   switch (m.command) {
     case "aparte":
       return;
     case "ayuda":
       return deps.poster.postToThread(threadOf(m), helpText());
     case "parar":
+      if (existing && !mayDrive(deps, existing, m.user)) return deps.poster.postToThread(threadOf(m), `<@${m.user}> no puedo parar este trabajo desde tu pedido.`);
       return cancel(deps, m);
     case "pregunta":
-      return answer(deps, m);
+      return perform(deps, m.user, m, "question");
     case "repo":
-      return channelRepo(deps, m);
+      return channelRepo(deps, m, access);
     case "nuevo":
-      if (m.threadTs !== m.ts) return startInNewThread(deps, m);
+      if (m.threadTs !== m.ts) return perform(deps, m.user, m, "new_thread");
   }
-  const id = jobId(m.channel, m.threadTs);
-  const mode = commandMode(m.command);
-  const existing = deps.store.data.jobs[id];
   if (existing && m.command !== "nuevo" && m.ownTarget && isOtherTask(existing, m.ownTarget)) {
     if (isActive(existing) && isGuessedRepo(existing) && !sameRepo(existing, m.ownTarget)) {
-      return correctRepo(deps, existing, m, m.ownTarget);
+      if (access === "owner") return correctRepo(deps, existing, m, m.ownTarget);
+      return deps.poster.postToThread(existing, `<@${m.user}> no puedo cambiar el repo de este trabajo desde tu pedido.`);
     }
     return replyOtherTask(deps, existing, m.ownTarget);
   }
-  if (existing && isActive(existing)) return handleThreadInput(deps, existing, m, { onlyFresh: true });
+  if (existing && isActive(existing)) return mayDrive(deps, existing, m.user) ? handleThreadInput(deps, existing, m, { onlyFresh: true }) : undefined;
   if (!m.command && deps.classify) return routeMention(deps, m, existing);
-  return runMode(deps, m, mode);
+  return perform(deps, m.user, m, commandMode(m.command));
+}
+
+/** Work that `actor` (the mention's author, or whoever picked its route) asked for: an owner's runs now, a teammate's waits for an owner. */
+function perform(deps: BotDeps, actor: string, m: Mention, work: Work, note?: string): Promise<void> {
+  return accessOf(deps, actor) === "owner" ? execute(deps, m, work, note) : requestApproval(deps, m, work, note);
+}
+
+function execute(deps: BotDeps, m: Mention, work: Work, note?: string): Promise<void> {
+  if (work === "question") return answer(deps, m, note);
+  if (work === "new_thread") return startInNewThread(deps, m);
+  return runMode(deps, m, work, note);
+}
+
+/** What the run would touch, for the card; undefined when it would only ask for the missing repo, PR or question, which needs no approval. */
+function plannedTarget(deps: BotDeps, m: Mention, work: Work): { label: string; followUp: boolean } | undefined {
+  if (work === "question") return m.text && m.target ? { label: targetLabel(m.target), followUp: false } : undefined;
+  const job = deps.store.data.jobs[jobId(m.channel, m.threadTs)];
+  if (work !== "new_thread" && job && isResumable(job)) return { label: jobLabel(job), followUp: true };
+  const target = work === "review" && m.target ? pullTarget(m.target, m.text) : m.target;
+  return target && { label: targetLabel(target), followUp: false };
+}
+
+const NOT_NOW = (user: string) => `🙅 <@${user}>, por ahora no puedo tomar este pedido.`;
+const EXPIRED = (user: string) => `⌛ <@${user}>, no pude tomar este pedido; si sigue haciendo falta, volvé a mencionarme.`;
+
+/** Stores the request and DMs every owner a card; the teammate only sees 👀 until an owner decides. */
+async function requestApproval(deps: BotDeps, m: Mention, work: Work, note?: string): Promise<void> {
+  const planned = plannedTarget(deps, m, work);
+  if (!planned) return execute(deps, m, work, note);
+  const id = approvalId(m);
+  if (deps.store.data.approvals[id]) return;
+  const link = await deps.poster.permalink(m.channel, m.ts).catch((err) => {
+    console.error(`permalink of ${id} failed:`, err);
+    return undefined;
+  });
+  const approval: Approval = { id, mention: m, work, note, target: planned.label, followUp: planned.followUp, link, createdAt: (deps.now ?? Date.now)(), cards: [], state: { kind: "pending" } };
+  deps.store.data.approvals[id] = approval;
+  deps.store.save();
+  await deps.poster.react(m.channel, m.ts, "eyes");
+  const card = approvalCard(approval);
+  for (const owner of deps.allowedUsers) {
+    try {
+      const sent = await deps.poster.dm(owner, card.text, card.blocks);
+      const current = deps.store.data.approvals[id];
+      deps.store.data.approvals[id] = { ...current, cards: [...current.cards, sent] };
+      deps.store.save();
+    } catch (err) {
+      console.error(`DM to ${owner} for ${id} failed:`, err);
+    }
+  }
+  if (deps.store.data.approvals[id].cards.length) return;
+  delete deps.store.data.approvals[id];
+  deps.store.save();
+  await deps.poster.postToThread(threadOf(m), NOT_NOW(m.user));
+}
+
+/** Records the decision once, rewrites every owner's card, then runs or turns down the request. */
+async function settle(deps: Pick<BotDeps, "poster" | "store">, approval: Approval, decision: Decision): Promise<Approval | undefined> {
+  const next = decide(approval, decision);
+  if (!next) return undefined;
+  deps.store.data.approvals[next.id] = next;
+  deps.store.save();
+  const card = approvalCard(next);
+  for (const c of next.cards) {
+    await deps.poster.update(c.channel, c.ts, card.text, card.blocks).catch((err) => console.error(`updating approval card ${c.channel}/${c.ts} failed:`, err));
+  }
+  const m = next.mention;
+  if (next.state.kind === "rejected") await deps.poster.postToThread(threadOf(m), NOT_NOW(m.user));
+  if (next.state.kind === "expired") await deps.poster.postToThread(threadOf(m), EXPIRED(m.user));
+  return next;
+}
+
+/** Pending requests older than a day expire; safe to call on every tick. */
+export async function expireApprovals(deps: Pick<BotDeps, "poster" | "store" | "now">, now = (deps.now ?? Date.now)()): Promise<void> {
+  for (const approval of dueExpiries(deps.store.data.approvals, now)) {
+    await settle(deps, approval, { kind: "expired" });
+  }
+}
+
+async function decideApproval(deps: BotDeps, input: ClickInput, click: Extract<Click, { kind: "approval" }>): Promise<void> {
+  const where = { slack: { channel: input.channel, threadTs: input.messageTs, requester: input.user } };
+  if (accessOf(deps, input.user) !== "owner") return deps.poster.ephemeral(where, input.user, `Perdón <@${input.user}>, este botón no es para vos.`);
+  await expireApprovals(deps);
+  const approval = deps.store.data.approvals[click.approvalId];
+  if (!approval) return deps.poster.ephemeral(where, input.user, "No encuentro ese pedido.");
+  const decided = await settle(deps, approval, click.decision === "approve" ? { kind: "approved", by: input.user } : { kind: "rejected", by: input.user });
+  if (!decided) {
+    const state = deps.store.data.approvals[click.approvalId].state;
+    return deps.poster.ephemeral(where, input.user, state.kind === "expired" ? "Ese pedido ya venció." : "Ese pedido ya está decidido.");
+  }
+  if (decided.state.kind === "approved") await execute(deps, decided.mention, decided.work, decided.note);
 }
 
 /** `note` is appended to the start message, to say how a mention without a command was understood. */
@@ -164,14 +281,10 @@ function runMode(deps: BotDeps, m: Mention, mode: Mode, note?: string): Promise<
   return startJob(deps, m, mode, undefined, note);
 }
 
-function runRoute(deps: BotDeps, m: Mention, route: AskableRoute, note?: string): Promise<void> {
-  return route === "question" ? answer(deps, m, note) : runMode(deps, m, route, note);
-}
-
 /** A plain mention: Jev picks the route when it is sure enough for what that route costs, otherwise the human does. */
 async function routeMention(deps: BotDeps, m: Mention, job: Job | undefined): Promise<void> {
   const id = jobId(m.channel, m.threadTs);
-  let decision: Decision;
+  let decision: RouteDecision;
   try {
     const answer = await deps.classify!(routeState(m, job));
     decision = decideRoute(answer);
@@ -182,7 +295,7 @@ async function routeMention(deps: BotDeps, m: Mention, job: Job | undefined): Pr
   }
   if (decision.kind === "ask") return askRoute(deps, m);
   if (decision.route === "none") return deps.poster.react(m.channel, m.ts, "thumbsup");
-  return runRoute(deps, m, decision.route, routeHint(decision.route));
+  return perform(deps, m.user, m, decision.route, routeHint(decision.route));
 }
 
 async function askRoute(deps: BotDeps, m: Mention): Promise<void> {
@@ -361,7 +474,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode, no
   if (!isResumable(job) || !job.worktreeId) return;
   const previous = job.state.kind === "done" ? job.state : { summary: CANCELLED_SUMMARY, prUrl: undefined };
   const worktree = worktreeSelector(job.worktreeId);
-  const next = commit(deps, job, { kind: "follow_up", request: m.text, mode });
+  const next = commit(deps, job, { kind: "follow_up", request: m.text, mode, requester: m.user });
   if (!next) return;
   await deps.poster.react(m.channel, m.ts, "saluting_face");
   const startMsg = await postStart(deps, next, withNote(START_TEXT[mode].followUp, note));
@@ -449,9 +562,13 @@ function knownList(repos: readonly KnownRepo[]): string {
   return repos.length ? `Repos que conozco: ${repos.map((r) => `\`${r.owner}/${r.name}\``).join(", ")}.` : "Orca no tiene repos de GitHub cargados todavía.";
 }
 
-async function channelRepo(deps: BotDeps, m: Mention): Promise<void> {
+async function channelRepo(deps: BotDeps, m: Mention, access: Access): Promise<void> {
   const repos = await knownReposOrNone(deps);
   const arg = parseRepoArg(m.text, repos);
+  if (access !== "owner" && (arg.kind === "set" || arg.kind === "clear")) {
+    await deps.poster.postToThread(threadOf(m), "No puedo cambiar el repo de este canal desde tu pedido.");
+    return;
+  }
   const channels = deps.store.data.channels;
   const current = channels[m.channel];
   let text: string;
@@ -580,7 +697,7 @@ export async function handleThreadReply(deps: BotDeps, r: ThreadReply): Promise<
   if (parseCommand(r.text)?.name === "aparte") return true;
   const job = deps.store.data.jobs[jobId(r.channel, r.threadTs)];
   if (!job || !isActive(job)) return false;
-  await handleThreadInput(deps, job, r);
+  if (mayDrive(deps, job, r.user)) await handleThreadInput(deps, job, r);
   return true;
 }
 
@@ -592,15 +709,17 @@ const STALE = "Ese botón ya no es válido: el hilo siguió de largo.";
 /** Buttons run the same paths as typed input. A click on a message the job has moved past changes nothing. */
 export async function handleClick(deps: BotDeps, input: ClickInput): Promise<void> {
   const where = { slack: { channel: input.channel, threadTs: input.threadTs, requester: input.user } };
-  if (!deps.allowedUsers.has(input.user)) {
-    await deps.poster.ephemeral(where, input.user, `Perdón <@${input.user}>, no tengo permiso para trabajar para vos. Pedile al dueño del bot que agregue tu ID \`${input.user}\` a ALLOWED_SLACK_USERS.`);
-    return;
-  }
   const { click } = input;
+  if (click.kind === "approval") return decideApproval(deps, input, click);
+  const access = accessOf(deps, input.user);
+  if (access === "stranger") return deps.poster.ephemeral(where, input.user, refusal(input.user));
   if (click.jobId !== jobId(input.channel, input.threadTs)) return deps.poster.ephemeral(where, input.user, STALE);
   // A start in flight posts its buttons before the job is stored.
   await starting.get(click.jobId);
   const job = deps.store.data.jobs[click.jobId];
+  if (access === "teammate" && !teammateMayClick(deps, click, job, input.user)) {
+    return deps.poster.ephemeral(where, input.user, `Perdón <@${input.user}>, este botón no es para vos.`);
+  }
   const onStartMsg = job !== undefined && isActive(job) && job.startMsg?.ts === input.messageTs;
   let handled = false;
   switch (click.kind) {
@@ -639,10 +758,23 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
         deps.store.save();
         const chosen = plainMessage(`${ROUTE_QUESTION}\n✅ <@${input.user}> eligió: ${BUTTON_LABELS[click.route]}`);
         await deps.poster.update(input.channel, input.messageTs, chosen.text, chosen.blocks).catch((err) => console.error(`retiring route buttons in ${click.jobId} failed:`, err));
-        await runRoute(deps, pending.mention, click.route);
+        await perform(deps, input.user, pending.mention, click.route);
       }
       break;
     }
   }
   if (!handled) await deps.poster.ephemeral(where, input.user, STALE);
+}
+
+/** A teammate drives only their own job (stop, answers) and picks the route only of their own mention; changing a running job's repo stays with the owners. */
+function teammateMayClick(deps: BotDeps, click: Exclude<Click, { kind: "approval" }>, job: Job | undefined, user: string): boolean {
+  switch (click.kind) {
+    case "stop":
+    case "answer":
+      return job?.slack.requester === user;
+    case "route":
+      return deps.store.data.pendingRoutes[click.jobId]?.mention.user === user;
+    case "repo":
+      return false;
+  }
 }
