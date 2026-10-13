@@ -10,7 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { downloadFiles, inboxDir, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
 import type { LocalFile } from "./files.ts";
 import { PLAN_OPTIONS, awaitsReply, dueRelayExpiries, isActive, isOtherTask, isResumable, jobId, jobLabel, lastRun, newJob, sameRepo, targetLabel, transition } from "./jobs.ts";
-import type { Job, JobEvent, Mode, Person, RepoRef } from "./jobs.ts";
+import type { Job, JobEvent, LocalDir, Mode, Person, RepoRef } from "./jobs.ts";
 import { worktreePath, worktreeSelector } from "./orca.ts";
 import type { Orca, WorkerStart } from "./orca.ts";
 import { pullTarget, stripMention } from "./parse.ts";
@@ -48,6 +48,10 @@ export type BotDeps = {
   poster: Poster;
   store: StoreHandle;
   resolveRepo(owner: string, name: string): Promise<string>;
+  /** Channels bound to a local directory by `ALFRED_DIRS`, by channel id: every mention there works in that directory. */
+  dirs: Readonly<Record<string, LocalDir>>;
+  /** The Orca repo id of a bound directory, looked up on each use. */
+  resolveDir(path: string): Promise<string>;
   /** GitHub repos Orca already has, for `!repo` and the change-repo picker. */
   knownRepos(): Promise<KnownRepo[]>;
   latestSession(worktreePath: string): Promise<string | undefined>;

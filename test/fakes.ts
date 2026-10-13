@@ -119,6 +119,11 @@ export function fakes(over: Partial<Orca> = {}) {
     poster,
     store,
     resolveRepo: async () => "r1",
+    dirs: {},
+    async resolveDir(path) {
+      calls.push(`resolve-dir ${path}`);
+      return "rdir";
+    },
     allowedUsers: new Set(["U1", "U2"]),
     approvalUsers: new Set(["T1", "T2"]),
     knownRepos: async () => [

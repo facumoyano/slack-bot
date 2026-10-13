@@ -197,9 +197,15 @@ export async function findRepo(owner: string, name: string): Promise<string> {
   return cloned;
 }
 
-export async function repoIdForPath(path: string): Promise<string> {
+export async function orcaRepoAt(path: string): Promise<{ id: string; name: string } | undefined> {
   const { repos = [] } = await orca(["repo", "list"]);
   const repo = repos.find((r: Json) => r.path === path);
+  return repo && { id: String(repo.id), name: String(repo.displayName ?? repo.path.split("/").at(-1)) };
+}
+
+/** Looked up on every use: Orca gives a repo a new id when it is removed and added again. */
+export async function repoIdForPath(path: string): Promise<string> {
+  const repo = await orcaRepoAt(path);
   if (!repo) throw new OrcaError("repo_not_found", `no Orca repo at ${path}; run: orca repo add --path ${path}`);
   return repo.id;
 }

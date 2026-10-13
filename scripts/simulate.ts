@@ -150,7 +150,7 @@ const people = [`${OWNER}=owner`, ...values.users!.split(",")].map((pair) => {
 });
 const users = async () => people;
 
-const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify, users };
+const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, dirs: {}, resolveDir: repoIdForPath, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify, users };
 const channel = "SIM";
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
 const target =
