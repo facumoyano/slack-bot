@@ -4,12 +4,13 @@ import { basename, extname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { answerQuestion } from "../src/ask.ts";
-import { handleClick, handleDm, handleMention, handleThreadReply } from "../src/bot.ts";
+import { drainContent, handleClick, handleDm, handleMention, handleThreadReply } from "../src/bot.ts";
 import { parseCommand } from "../src/commands.ts";
 import type { BotDeps, Poster } from "../src/bot.ts";
 import { parseClick } from "../src/blocks.ts";
 import type { Block } from "../src/blocks.ts";
 import { runInbox } from "../src/inbox.ts";
+import { runIntake } from "../src/intake.ts";
 import { FILES_ROOT } from "../src/files.ts";
 import { jobId } from "../src/jobs.ts";
 import { ensureRun, findRepo, knownGithubRepos, orcaRepoAt, realOrca, repoIdForPath } from "../src/orca.ts";
@@ -33,10 +34,17 @@ const { values, positionals } = parseArgs({
     "reply-as": { type: "string", default: "USALVA" },
     reply: { type: "string" },
     users: { type: "string", default: "USALVA=salva,USEBAS=sebas" },
+    contenido: { type: "string" },
   },
 });
 const request = positionals.join(" ").trim();
-if (!request) {
+/** `--contenido <root>` watches `<root>/entrada` for manifests and reads clicks and replies from stdin instead of running one request. */
+const contentRoot = values.contenido ? resolve(values.contenido) : undefined;
+if (contentRoot && !values.dir) {
+  console.error("--contenido needs --dir: manifests name the channel bound to that directory (canal SIM)");
+  process.exit(2);
+}
+if (!request && !contentRoot) {
   console.error(
     'usage: node scripts/simulate.ts [--repo-path <orca repo path> | --dir <local directory in Orca>] [--as <userId>] [--teammates <ids>] [--follow-up "<text>"] [--cancel-after <seconds>] [--attach <file>]... [--dm "<owner DM>"]... [--reply-as <userId>] [--reply "<text>"] [--users <id=name,…>] "<request text or !command>"',
   );
@@ -71,9 +79,9 @@ function showBlocks(messageTs: string, blocks: Block[] = []): string {
 }
 
 const poster: Poster = {
-  async postToThread(_job, text, blocks) {
+  async postToThread(job, text, blocks) {
     const messageTs = nextTs();
-    console.log(`\n[${ts()}] [slack → hilo, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
+    console.log(`\n[${ts()}] [slack → hilo ${job.slack.threadTs}, ts ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
     return messageTs;
   },
   async update(_channel, messageTs, text, blocks) {
@@ -85,12 +93,13 @@ const poster: Poster = {
   async react(_channel, messageTs, name) {
     console.log(`[${ts()}] [slack reacción :${name}: en ${messageTs}]`);
   },
-  async postTopLevel(_channel, text) {
-    console.log(`\n[${ts()}] [slack → canal, hilo nuevo]\n${text}\n`);
-    return (Date.now() / 1000).toFixed(6);
+  async postTopLevel(_channel, text, blocks) {
+    const messageTs = nextTs();
+    console.log(`\n[${ts()}] [slack → canal, hilo nuevo ${messageTs}]\n${text}\n${showBlocks(messageTs, blocks)}`);
+    return messageTs;
   },
-  async uploadFile(_job, path) {
-    console.log(`[${ts()}] [archivo] ${basename(path)} (${(await stat(path)).size} bytes)`);
+  async uploadFile(job, path) {
+    console.log(`[${ts()}] [archivo en el hilo ${job.slack.threadTs}] ${basename(path)} (${(await stat(path)).size} bytes)`);
   },
   async permalink(channel, messageTs) {
     const link = `https://slack.example/archives/${channel}/p${messageTs.replace(".", "")}`;
@@ -163,6 +172,45 @@ const users = async () => people;
 
 const deps: BotDeps = { orca: realOrca, poster, store, resolveRepo, dirs, resolveDir: repoIdForPath, knownRepos, allowedUsers: new Set([OWNER]), approvalUsers: teammates, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, fetchFile, classify, users };
 // The simulated thread has no other messages and no Claude fallback; --repo-path stands in for naming the repo.
+if (contentRoot) await runContent(contentRoot);
+
+/** Content mode: the intake and the inbox run until stdin says `:salir`; each other line is a click or a reply in a content thread. */
+async function runContent(root: string): Promise<never> {
+  let stop = false;
+  const stopped = () => stop;
+  console.log(`[${ts()}] contenido: miro ${root}/entrada; por stdin: ":click-as <usuario> <acción> <valor>", ":reply-as <usuario> <hilo> <texto>", ":salir"`);
+  const lines = createInterface({ input: process.stdin });
+  lines.on("line", (line) => {
+    const text = line.trim();
+    if (text === ":salir") {
+      stop = true;
+      return;
+    }
+    const click = /^:click-as\s+(\S+)\s+(\S+)\s+(.+)$/.exec(text);
+    const reply = /^:reply-as\s+(\S+)\s+(\S+)\s+(.+)$/.exec(text);
+    if (click) {
+      const [, as, action, value] = click;
+      const messageTs = clickable.get(`${action} ${value}`);
+      const parsed = parseClick(action, value);
+      if (!parsed || !messageTs) return console.log(`[${ts()}] (click desconocido: ${action} ${value})`);
+      console.log(`[${ts()}] [usuario ${as} toca ${action} en ${messageTs}]`);
+      handleClick(deps, { click: parsed, user: as, channel, threadTs: messageTs, messageTs }).catch((err) => console.error("click failed:", err));
+    } else if (reply) {
+      const [, as, threadTs, said] = reply;
+      console.log(`[${ts()}] [usuario ${as} responde en el hilo ${threadTs}] ${said}`);
+      handleThreadReply(deps, { channel, threadTs, ts: nextTs(), user: as, text: said }).catch((err) => console.error("thread reply failed:", err));
+    } else if (text) {
+      console.log(`[${ts()}] (línea desconocida: ${text})`);
+    }
+  });
+  await Promise.all([
+    runIntake(deps, root, stopped),
+    runInbox({ orca: realOrca, poster, store, latestSession, filesRoot: FILES_ROOT, onDirFree: (path) => drainContent(deps, path) }, stopped),
+  ]);
+  console.log(`[${ts()}] estado final: ${JSON.stringify({ contents: store.data.contents, contentQueues: store.data.contentQueues, jobs: Object.values(store.data.jobs).map((j) => ({ id: j.id, request: j.request, state: j.state.kind })) })}`);
+  process.exit(0);
+}
+
 const target =
   (await chooseTarget({ own: [text], thread: [], repos: await knownRepos(), channelRepo: store.data.channels[channel], infer: async () => undefined })) ??
   (local[0] && { ...local[0], source: "link" as const });

@@ -6,6 +6,8 @@ import { ROUTE_QUESTION, answeredMessage, approvalCard, plainMessage, routeAskMe
 import type { Block, Click } from "./blocks.ts";
 import { commandMode, helpText, parseCommand, parseRepoArg } from "./commands.ts";
 import type { CommandName } from "./commands.ts";
+import { clickAction, contentInThread, contentPrompt, decideContent, decidedLine, replyAction } from "./content.ts";
+import type { QueuedAction } from "./content.ts";
 import { mkdir } from "node:fs/promises";
 import { downloadFiles, inboxDir, jobSlug, outboxDir, problemsNotice, selectFiles, shownText, withFiles } from "./files.ts";
 import type { LocalFile } from "./files.ts";
@@ -34,7 +36,7 @@ export type Poster = {
   ephemeral(job: Pick<Job, "slack">, user: string, text: string): Promise<void>;
   react(channel: string, messageTs: string, name: string): Promise<void>;
   /** Starts a new thread in the channel; returns its ts. */
-  postTopLevel(channel: string, text: string): Promise<string>;
+  postTopLevel(channel: string, text: string, blocks?: Block[]): Promise<string>;
   /** Uploads one local file into the job's thread. */
   uploadFile(job: Pick<Job, "slack">, path: string): Promise<void>;
   /** A link to a message, e.g. a thread's root. */
@@ -137,6 +139,7 @@ async function commitEnding(deps: BotDeps, job: Job, ev: JobEvent): Promise<Job 
   const before = deps.store.data.jobs[job.id] ?? job;
   const next = commit(deps, job, ev);
   await retireStart(deps, before, next);
+  if (before.repo.kind === "dir" && next && isActive(before) && !isActive(next)) drainContent(deps, before.repo.path);
   return next;
 }
 
@@ -809,6 +812,7 @@ async function handleThreadInput(
 /** Plain thread replies (no mention). Returns false when the thread has no active job; an `!aparte` reply counts as handled. */
 export async function handleThreadReply(deps: BotDeps, r: ThreadReply): Promise<boolean> {
   if (parseCommand(r.text)?.name === "aparte") return true;
+  if (await contentReply(deps, r)) return true;
   const job = deps.store.data.jobs[jobId(r.channel, r.threadTs)];
   if (job?.state.kind === "awaiting_reply") {
     if (awaitsReply(job, r.user, r.ts, accessOf(deps, r.user) === "owner")) await relayReply(deps, job, r);
@@ -829,6 +833,7 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
   const where = { slack: { channel: input.channel, threadTs: input.threadTs, requester: input.user } };
   const { click } = input;
   if (click.kind === "approval") return decideApproval(deps, input, click);
+  if (click.kind === "content") return contentClick(deps, input, click);
   const access = accessOf(deps, input.user);
   if (access === "stranger") return deps.poster.ephemeral(where, input.user, refusal(input.user));
   if (click.jobId !== jobId(input.channel, input.threadTs)) return deps.poster.ephemeral(where, input.user, STALE);
@@ -885,7 +890,7 @@ export async function handleClick(deps: BotDeps, input: ClickInput): Promise<voi
 }
 
 /** A teammate drives only their own job (stop, answers) and picks the route only of their own mention; changing a running job's repo stays with the owners. */
-function teammateMayClick(deps: BotDeps, click: Exclude<Click, { kind: "approval" }>, job: Job | undefined, user: string): boolean {
+function teammateMayClick(deps: BotDeps, click: Exclude<Click, { kind: "approval" | "content" }>, job: Job | undefined, user: string): boolean {
   switch (click.kind) {
     case "stop":
     case "answer":
@@ -999,7 +1004,7 @@ async function relayReply(deps: BotDeps, job: Job, r: { user: string; text: stri
   await deps.poster.dm(relay.owner, text, undefined, relay.dmThread).catch((err) => console.error(`DM to ${relay.owner} failed:`, err));
 }
 
-async function nameOf(deps: BotDeps, id: string): Promise<string> {
+async function nameOf(deps: Pick<BotDeps, "users">, id: string): Promise<string> {
   const user = (await deps.users().catch(() => [])).find((u) => u.id === id);
   return user ? userLabel(user) : id;
 }
@@ -1020,4 +1025,103 @@ export async function expireRelays(deps: Pick<BotDeps, "poster" | "store" | "now
     if (!commit(deps, job, { kind: "reply_expired" })) continue;
     await deps.poster.dm(owner, text, undefined, dmThread).catch((err) => console.error(`DM to ${owner} failed:`, err));
   }
+}
+
+/** Owners and approval users decide content in bound channels directly: no owner approval in between. */
+function mayActOnContent(deps: BotDeps, user: string): boolean {
+  return accessOf(deps, user) !== "stranger";
+}
+
+/** The first click on the newest version decides it; the request it sends runs now or waits its turn in the directory. */
+async function contentClick(deps: BotDeps, input: ClickInput, click: Extract<Click, { kind: "content" }>): Promise<void> {
+  const where = { slack: { channel: input.channel, threadTs: input.threadTs, requester: input.user } };
+  if (!mayActOnContent(deps, input.user)) return deps.poster.ephemeral(where, input.user, "no podés aprobar este contenido");
+  const content = deps.store.data.contents[click.key];
+  if (!content || content.channel !== input.channel || !deps.dirs[content.channel]) return deps.poster.ephemeral(where, input.user, STALE);
+  if (click.version !== content.version || input.messageTs !== content.msgTs) return deps.poster.ephemeral(where, input.user, "hay una versión más nueva");
+  const decided = decideContent(content, click.decision, input.user);
+  if (!decided || decided.state.kind === "pending") return deps.poster.ephemeral(where, input.user, "ya decidido");
+  // Decided and queued before any await, so a double click runs once and simultaneous clicks keep their order.
+  deps.store.data.contents[click.key] = decided;
+  const item: QueuedAction = { action: clickAction(content, click.decision, input.user), channel: content.channel, threadTs: content.threadTs, ts: content.msgTs };
+  const { position, run } = submitContent(deps, item);
+  const text = `${content.text}\n\n${decidedLine(decided.state.kind, await nameOf(deps, input.user))}`;
+  const current = deps.store.data.contents[click.key];
+  if (current.msgTs === content.msgTs) {
+    deps.store.data.contents[click.key] = { ...current, text };
+    deps.store.save();
+  }
+  const plain = plainMessage(text);
+  await deps.poster.update(content.channel, content.msgTs, plain.text, plain.blocks).catch((err) => console.error(`retiring content buttons ${click.key} failed:`, err));
+  if (position) await announceQueued(deps, item, position, false);
+  await run;
+}
+
+/**
+ * A plain reply in a content thread asks for a change, also while a worker runs there; only a pending question
+ * or an owner's relay waiting for its reply takes it instead. Strangers' replies are ignored.
+ */
+async function contentReply(deps: BotDeps, r: ThreadReply): Promise<boolean> {
+  const content = deps.dirs[r.channel] ? contentInThread(deps.store.data.contents, r.channel, r.threadTs) : undefined;
+  if (!content) return false;
+  const state = deps.store.data.jobs[jobId(r.channel, r.threadTs)]?.state.kind;
+  if (state === "awaiting_answer" || state === "awaiting_reply") return false;
+  if (!mayActOnContent(deps, r.user) || (!r.text.trim() && !r.files?.length)) return true;
+  const item: QueuedAction = { action: replyAction(content, r.user, r.text.trim()), channel: r.channel, threadTs: r.threadTs, ts: r.ts, files: r.files ? [...r.files] : undefined };
+  const { position, run } = submitContent(deps, item);
+  if (position) await announceQueued(deps, item, position, true);
+  await run;
+  return true;
+}
+
+/** Appends to the directory's queue and starts its head if the directory is free: `position` is the item's place in line, 0 when it started. */
+function submitContent(deps: BotDeps, item: QueuedAction): { position: number; run?: Promise<void> } {
+  const path = deps.dirs[item.channel].path;
+  (deps.store.data.contentQueues[path] ??= []).push(item);
+  deps.store.save();
+  const run = drainContent(deps, path);
+  return { position: (deps.store.data.contentQueues[path]?.indexOf(item) ?? -1) + 1, run };
+}
+
+async function announceQueued(deps: BotDeps, item: QueuedAction, position: number, reply: boolean): Promise<void> {
+  const dir = deps.dirs[item.channel];
+  const where = { slack: { channel: item.channel, threadTs: item.threadTs, requester: item.action.by } };
+  if (reply) await deps.poster.react(item.channel, item.ts, "hourglass_flowing_sand").catch((err) => console.error("reacting ⏳ failed:", err));
+  await deps.poster.postToThread(where, `⏳ en cola: ${dir.name} está con otro pedido; sigo con esto cuando termine (${position}º en la fila).`);
+}
+
+/**
+ * Starts the head of a directory's content queue when nothing runs there. Synchronous up to the claim, so concurrent
+ * drains never start two. The popped queue is saved with the job the start stores, so a crash before that runs it again.
+ */
+export function drainContent(deps: BotDeps, path: string): Promise<void> | undefined {
+  const queue = deps.store.data.contentQueues[path];
+  if (!queue?.length || dirClaims.has(path) || activeJobInDir(deps.store.data, path, "")) return;
+  const item = queue.shift()!;
+  if (!queue.length) delete deps.store.data.contentQueues[path];
+  const dir = deps.dirs[item.channel];
+  if (dir?.path !== path) {
+    console.error(`content action for ${item.action.id} dropped: ${item.channel} is no longer bound to ${path}`);
+    deps.store.save();
+    return drainContent(deps, path);
+  }
+  const id = jobId(item.channel, item.threadTs);
+  dirClaims.set(path, id);
+  const p = runContent(deps, item, dir)
+    .catch((err) => console.error(`content action in ${id} failed:`, err))
+    .finally(() => {
+      if (dirClaims.get(path) === id) dirClaims.delete(path);
+      if (starting.get(id) === p) starting.delete(id);
+      drainContent(deps, path);
+    });
+  starting.set(id, p);
+  return p;
+}
+
+/** A fresh worker per action: the `/contenido` skills read everything they need from the directory, so no session is resumed. */
+async function runContent(deps: BotDeps, item: QueuedAction, dir: LocalDir): Promise<void> {
+  const text = contentPrompt(item.action, await nameOf(deps, item.action.by));
+  const target = { kind: "dir" as const, ...dir };
+  const m: Mention = { channel: item.channel, threadTs: item.threadTs, ts: item.ts, user: item.action.by, text, target, files: item.files };
+  await startInDir(deps, m, target, "change", "🫡 voy con eso…");
 }

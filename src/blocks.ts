@@ -1,6 +1,7 @@
 import type { types } from "@slack/bolt";
 import { WORK_TEXT } from "./approvals.ts";
 import type { Approval } from "./approvals.ts";
+import type { ContentKey } from "./content.ts";
 import type { RepoRef } from "./jobs.ts";
 import { ASKABLE, BUTTON_LABELS } from "./route.ts";
 import type { AskableRoute } from "./route.ts";
@@ -24,6 +25,8 @@ export const ACTIONS = {
   pr: `${ACTION_PREFIX}pr`,
   approve: `${ACTION_PREFIX}approve`,
   reject: `${ACTION_PREFIX}reject`,
+  contentApprove: `${ACTION_PREFIX}content_approve`,
+  contentReject: `${ACTION_PREFIX}content_reject`,
 } as const;
 
 export const MAX_OPTION_BUTTONS = 5;
@@ -33,7 +36,8 @@ export type Click =
   | { kind: "stop"; jobId: string }
   | { kind: "repo"; jobId: string; repo: RepoRef }
   | { kind: "route"; jobId: string; route: AskableRoute }
-  | { kind: "approval"; approvalId: string; decision: "approve" | "reject" };
+  | { kind: "approval"; approvalId: string; decision: "approve" | "reject" }
+  | { kind: "content"; key: ContentKey; version: number; decision: "approve" | "reject" };
 
 const SECTION_MAX = 3000;
 const LABEL_MAX = 75;
@@ -205,6 +209,12 @@ export function approvalCard(a: Approval): Message {
   };
 }
 
+const CONTENT_KEY = /^(propuesta|calendario):[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
+
+function isContentKey(value: string): value is ContentKey {
+  return CONTENT_KEY.test(value);
+}
+
 const JOB_ID = /^[A-Za-z0-9]+:\d+\.\d+$/;
 const REPO = /^([A-Za-z0-9][A-Za-z0-9_.-]*)\/([A-Za-z0-9][A-Za-z0-9_.-]*)$/;
 
@@ -222,6 +232,12 @@ export function parseClick(actionId: string, value: string | undefined): Click |
   if (value === undefined) return undefined;
   if (actionId === ACTIONS.approve || actionId === ACTIONS.reject) {
     return JOB_ID.test(value) ? { kind: "approval", approvalId: value, decision: actionId === ACTIONS.approve ? "approve" : "reject" } : undefined;
+  }
+  if (actionId === ACTIONS.contentApprove || actionId === ACTIONS.contentReject) {
+    const v = json(value);
+    const key = typeof v?.k === "string" && isContentKey(v.k) ? v.k : undefined;
+    if (!key || typeof v?.v !== "number" || !Number.isInteger(v.v) || v.v < 1) return undefined;
+    return { kind: "content", key, version: v.v, decision: actionId === ACTIONS.contentApprove ? "approve" : "reject" };
   }
   if (actionId === ACTIONS.stop) return JOB_ID.test(value) ? { kind: "stop", jobId: value } : undefined;
   if (actionId === ACTIONS.repo) {
