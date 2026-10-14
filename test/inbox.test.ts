@@ -165,7 +165,7 @@ function doneJob(sessionId?: string): Job {
 
 const followUpMention = { channel: "C1", threadTs: "100.1", ts: "100.9", user: "U1", text: "¿cuál era la palabra?" };
 
-test("a follow-up on a job with a session resumes that exact session with a resumed spec", async () => {
+test("a follow-up in the same mode resumes that exact session and sends only the new message", async () => {
   const f = fakes();
   f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
 
@@ -173,10 +173,23 @@ test("a follow-up on a job with a session resumes that exact session with a resu
 
   const job = f.store.data.jobs["C1:100.1"];
   assert.deepEqual(f.calls, ["terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
-  assert.match(f.specs[0], /continuing your own previous work on this request, in this same Claude session/);
+  assert.match(f.specs[0], /## New message in the Slack thread[\s\S]*¿cuál era la palabra\?/);
+  assert.doesNotMatch(f.specs[0], /pstack:poteto-mode|## Constraints|## Ownership/);
   assert.equal(job.state.kind, "working");
   assert.equal(job.dispatchId, "d3");
   assert.equal(job.request, "¿cuál era la palabra?");
+});
+
+test("a follow-up in another mode resumes the session with the full spec for that mode", async () => {
+  const f = fakes();
+  f.store.data.jobs["C1:100.1"] = doneJob("sess-1");
+
+  await handleMention(f.deps, { ...followUpMention, text: "¿por qué falló?", command: "investiga" });
+
+  assert.equal(f.calls[2], "resume term-1");
+  assert.match(f.specs[0], /continuing your own previous work on this request, in this same Claude session/);
+  assert.match(f.specs[0], /This spec replaces your previous run's spec/);
+  assert.match(f.specs[0], /pstack:poteto-mode/);
 });
 
 test("when the resumed session cannot take the task, its terminal is closed and a fresh follow-up starts", async () => {
