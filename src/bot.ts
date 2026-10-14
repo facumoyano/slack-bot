@@ -177,6 +177,8 @@ export async function handleMention(deps: BotDeps, mention: Mention): Promise<vo
   const existing = deps.store.data.jobs[id];
   // Whoever the relay asked may answer by mentioning the bot; an owner's mention is a follow-up that ends the wait.
   if (existing && !m.command && access !== "owner" && awaitsReply(existing, m.user, m.ts, false)) return relayReply(deps, existing, m);
+  // In a content thread, mentioning Alfred to ask for a change means the same as a plain reply.
+  if (!m.command && m.threadTs !== m.ts && (await contentReply(deps, m))) return;
   if (access === "stranger") return deps.poster.postToThread(threadOf(m), refusal(m.user));
   switch (m.command) {
     case "aparte":

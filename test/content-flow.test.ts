@@ -364,3 +364,14 @@ test("a teammate's normal mention in a bound channel, outside a content thread, 
   assert.ok(f.reactions.includes("300.1:eyes"));
   assert.equal(f.store.data.approvals[`${CH}:300.1`].state.kind, "pending");
 });
+
+test("mentioning Alfred in a propuesta's thread asks for the change instead of offering routes", async () => {
+  const { f, dir, drop, sweep } = setup();
+  drop("p1.json", proposal(dir));
+  await sweep();
+
+  await handleMention(f.deps, { channel: CH, threadTs: "200.1", ts: "200.8", user: SALVA, text: "lo de horas extras no, proponé otra cosa" });
+
+  assert.deepEqual(requests(f), [`/contenido cambiar ${ID} por Salva: lo de horas extras no, proponé otra cosa`]);
+  assert.ok(!f.posts.some((p) => /Qué querés que haga/.test(p.text)));
+});
