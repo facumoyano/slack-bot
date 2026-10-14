@@ -350,3 +350,17 @@ test("a mention in a bound directory busy with a content action keeps the usual 
   assert.equal(f.specs.length, 1);
   assert.deepEqual(f.store.data.contentQueues, {});
 });
+
+test("a teammate's normal mention in a bound channel, outside a content thread, still waits for an owner's approval by DM", async () => {
+  const { f, dir, drop, sweep } = setup();
+  drop("p1.json", proposal(dir));
+  await sweep();
+
+  await handleMention(f.deps, { channel: CH, threadTs: "300.1", ts: "300.1", user: SALVA, text: "armá el calendario de la semana" });
+
+  assert.deepEqual(f.specs, [], "no worker before an owner approves");
+  assert.deepEqual(f.dms.map((d) => d.user), ["U1", "U2"]);
+  assert.match(f.dms[0].text, /armá el calendario de la semana/);
+  assert.ok(f.reactions.includes("300.1:eyes"));
+  assert.equal(f.store.data.approvals[`${CH}:300.1`].state.kind, "pending");
+});
