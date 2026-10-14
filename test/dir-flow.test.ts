@@ -49,6 +49,7 @@ test("a mention in a bound channel starts a worker on the directory's own worktr
   assert.match(spec, /git add <path> <path> …/);
   assert.match(spec, /Never `git add -A`, `git add \.` or `git commit -a`/);
   assert.match(spec, /Never commit `\.mcp\.json`, `\.claude\/`, `\.agents\/`/);
+  assert.match(spec, /except the paths this directory's own `CLAUDE\.md`, `AGENTS\.md` or skills tell you to write to/);
 });
 
 test("!repo in a bound channel shows the directory and refuses to set or clear a repo", async () => {

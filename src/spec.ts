@@ -340,7 +340,7 @@ function buildDirSpec(input: SpecInput, dir: DirRepo): string {
     statusLine(readOnly ? "found the relevant files, reached an answer" : "understood the request, first draft written, files committed"),
     "",
     "## Ownership",
-    "You work in this directory only. Do not touch other directories or repositories.",
+    "You work in this directory only. Do not touch other directories or repositories, except the paths this directory's own `CLAUDE.md`, `AGENTS.md` or skills tell you to write to, such as an inbox another tool reads; writing there is part of the work, not posting to Slack yourself.",
     "",
     "## Observable acceptance",
     ...acceptance,
