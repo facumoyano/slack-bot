@@ -187,3 +187,21 @@ test("git helpers: an empty directory has no sha, then the files a run committed
   assert.deepEqual(await changedFiles(dir, base), ["b.md"]);
   assert.match((await checkoutOf(dir)).sha!, /^[0-9a-f]{7,}$/);
 });
+
+test("a plain mention in a bound channel skips Jev and goes straight to the directory's agent; other channels still route", async () => {
+  const f = bound();
+  let classified = 0;
+  f.deps.classify = async () => {
+    classified++;
+    return { choice: "change", confidence: 0.2, probabilities: {} };
+  };
+
+  await handleMention(f.deps, mention({ text: "lo del kpi de horas extras no me gusta, proponé otro" }));
+
+  assert.equal(classified, 0);
+  assert.deepEqual(f.calls, [`resolve-dir ${MKT}`, `head ${MKT}`, `followup path:${MKT}`]);
+  assert.ok(!f.posts.some((p) => /Qué querés que haga/.test(String(p))));
+
+  await handleMention(f.deps, mention({ channel: "C1", threadTs: "400.1", ts: "400.1", text: "algo ambiguo", target: github, ownTarget: github }));
+  assert.equal(classified, 1);
+});
