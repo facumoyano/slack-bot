@@ -203,7 +203,8 @@ export async function handleMention(deps: BotDeps, mention: Mention): Promise<vo
     return replyOtherTask(deps, existing, m.ownTarget);
   }
   if (existing && isActive(existing)) return mayDrive(deps, existing, m.user) ? handleThreadInput(deps, existing, m, { onlyFresh: true }) : undefined;
-  if (!m.command && deps.classify) return routeMention(deps, m, existing);
+  // Jev's routes describe code work; in a channel bound to a directory, a plain mention goes straight to that directory's agent.
+  if (!m.command && deps.classify && m.target?.kind !== "dir") return routeMention(deps, m, existing);
   return perform(deps, m.user, m, commandMode(m.command));
 }
 
