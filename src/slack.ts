@@ -160,8 +160,8 @@ export function createSlack(config: SlackConfig) {
         if (err?.data?.error !== "already_reacted") throw err;
       });
     },
-    async postTopLevel(channel, text) {
-      const res = await app.client.chat.postMessage({ channel, text });
+    async postTopLevel(channel, text, blocks) {
+      const res = await app.client.chat.postMessage({ channel, text, blocks });
       if (!res.ts) throw new Error("chat.postMessage returned no ts");
       return res.ts;
     },
@@ -184,7 +184,8 @@ export function createSlack(config: SlackConfig) {
   };
   const fetchFile = (url: string) => fetch(url, { headers: { Authorization: `Bearer ${config.botToken}` } });
 
-  async function start(deps: Omit<BotDeps, "poster" | "botUserId" | "fetchFile" | "users">): Promise<void> {
+  /** Connects to Slack; returns the deps the handlers use, for the loops that act on their own (content intake, queues). */
+  async function start(deps: Omit<BotDeps, "poster" | "botUserId" | "fetchFile" | "users">): Promise<BotDeps> {
     const auth = await app.client.auth.test();
     const botUserId = auth.user_id as string;
     const botId = auth.bot_id as string | undefined;
@@ -208,6 +209,7 @@ export function createSlack(config: SlackConfig) {
 
     await app.start();
     console.log(`slack: connected as ${botUserId}`);
+    return full;
   }
 
   return { poster, start };

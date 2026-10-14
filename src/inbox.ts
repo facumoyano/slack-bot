@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { jobSlug, outboxDir, outboxFiles, retire } from "./files.ts";
-import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
+import { applyInboxMessage, dueProgress, extractPrUrl, findJobByDispatch, isActive, markProcessed, nextProgressIn, parsePayload, transition } from "./jobs.ts";
 import type { InboxMessage, InboxOutcome, Job } from "./jobs.ts";
 import { expireApprovals, expireRelays, retireStart, startsSettled } from "./bot.ts";
 import { readPlan, readRelay, readReport, slackPost, toSlackMrkdwn } from "./report.ts";
@@ -18,6 +18,8 @@ export type InboxDeps = {
   /** Where each job's `out/` folder lives. */
   filesRoot: string;
   now?(): number;
+  /** Called once a job in a local directory stops running there, so queued content actions can start. */
+  onDirFree?(path: string): void;
 };
 
 async function prFallback(deps: InboxDeps, msg: InboxMessage): Promise<string | undefined> {
@@ -140,6 +142,7 @@ export async function processBatch(deps: InboxDeps, messages: readonly InboxMess
     if (outcome?.release) {
       await deps.orca.release(outcome.release).catch((err) => console.error(`worker-release ${outcome.release} failed:`, err));
     }
+    if (committed && before?.repo.kind === "dir" && isActive(before) && !isActive(outcome.job)) deps.onDirFree?.(before.repo.path);
   }
   for (const [before, outcome] of dueProgress(data, now()).map((o) => [data.jobs[o.job.id], o] as const)) {
     await deps.poster.postToThread(outcome.job, outcome.post!);

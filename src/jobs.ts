@@ -3,6 +3,7 @@ import { MESSAGE_MAX, doneMessage, planMessage, questionMessage } from "./blocks
 import type { Block, Message } from "./blocks.ts";
 import type { Approval } from "./approvals.ts";
 import type { Mention } from "./bot.ts";
+import type { Content, QueuedAction } from "./content.ts";
 import { digestText, parseRelayFile } from "./relay.ts";
 import type { UnknownName } from "./relay.ts";
 import { slackPost } from "./report.ts";
@@ -105,6 +106,10 @@ export type Store = {
   lastThreadByOwner: Record<string, string>;
   /** Per DM thread (`<dm channel>:<root ts>`), the job it is about; a DM written inside that thread goes there. */
   jobByDmThread: Record<string, string>;
+  /** Content posted from manifests, by `<tipo>:<id>`: its newest version, which also says which versions were already handled. */
+  contents: Record<string, Content>;
+  /** Per bound directory path, content actions waiting for it, oldest first. */
+  contentQueues: Record<string, QueuedAction[]>;
 };
 
 export type JobEvent =

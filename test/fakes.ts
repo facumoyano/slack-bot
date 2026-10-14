@@ -14,20 +14,22 @@ export function fakes(over: Partial<Orca> = {}) {
   const specs: string[] = [];
   const reactions: string[] = [];
   const calls: string[] = [];
-  const messages: { ts: string; text: string; blocks?: Block[] }[] = [];
+  const messages: { ts: string; text: string; blocks?: Block[]; thread: string }[] = [];
+  const tops: { channel: string; ts: string; text: string; blocks?: Block[] }[] = [];
   const updates: { ts: string; text: string; blocks?: Block[] }[] = [];
   const ephemerals: string[] = [];
   const dms: { user: string; channel: string; ts: string; text: string; blocks?: Block[]; threadTs?: string }[] = [];
   const uploads: string[] = [];
+  const uploadThreads: string[] = [];
   const failUploads = new Set<string>();
   /** Bytes served for each Slack file URL; a missing URL is a 404. */
   const slackFiles: Record<string, Response | (() => Response)> = {};
   const fetched: string[] = [];
   const poster: Poster = {
-    async postToThread(_job, text, blocks) {
+    async postToThread(job, text, blocks) {
       posts.push(text);
       const ts = `900.${messages.length + 1}`;
-      messages.push({ ts, text, blocks });
+      messages.push({ ts, text, blocks, thread: job.slack.threadTs });
       return ts;
     },
     async update(_c, ts, text, blocks) {
@@ -39,13 +41,16 @@ export function fakes(over: Partial<Orca> = {}) {
     async react(_c, ts, name) {
       reactions.push(`${ts}:${name}`);
     },
-    async postTopLevel(_c, text) {
+    async postTopLevel(channel, text, blocks) {
       posts.push(`[top] ${text}`);
-      return "200.1";
+      const ts = `200.${tops.length + 1}`;
+      tops.push({ channel, ts, text, blocks });
+      return ts;
     },
-    async uploadFile(_job, path) {
+    async uploadFile(job, path) {
       if (failUploads.has(path)) throw new Error("upload_failed");
       uploads.push(path);
+      uploadThreads.push(job.slack.threadTs);
     },
     async permalink(channel, ts) {
       return `https://slack.test/${channel}/${ts}`;
@@ -159,7 +164,7 @@ export function fakes(over: Partial<Orca> = {}) {
       return "## Respuesta\nSe valida en **src/webhook.ts:12**.";
     },
   };
-  return { posts, messages, updates, ephemerals, dms, reactions, calls, specs, store, deps, sessions, clock, uploads, failUploads, slackFiles, fetched };
+  return { tops, uploadThreads, posts, messages, updates, ephemerals, dms, reactions, calls, specs, store, deps, sessions, clock, uploads, failUploads, slackFiles, fetched };
 }
 
 export function workingJob(): Job {

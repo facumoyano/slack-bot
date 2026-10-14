@@ -5,7 +5,7 @@ import type { Store } from "./jobs.ts";
 export type StoreHandle = { data: Store; save(): void };
 
 export function openStore(path: string): StoreHandle {
-  let data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {}, lastThreadByOwner: {}, jobByDmThread: {} };
+  let data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {}, lastThreadByOwner: {}, jobByDmThread: {}, contents: {}, contentQueues: {} };
   try {
     data = JSON.parse(readFileSync(path, "utf8")) as Store;
   } catch (err) {
@@ -16,6 +16,8 @@ export function openStore(path: string): StoreHandle {
   data.approvals ??= {};
   data.lastThreadByOwner ??= {};
   data.jobByDmThread ??= {};
+  data.contents ??= {};
+  data.contentQueues ??= {};
   // Jobs saved before modes existed were all changes.
   for (const job of Object.values(data.jobs)) job.mode ??= "change";
   mkdirSync(dirname(path), { recursive: true });
@@ -30,6 +32,6 @@ export function openStore(path: string): StoreHandle {
   return handle;
 }
 
-export function memoryStore(data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {}, lastThreadByOwner: {}, jobByDmThread: {} }): StoreHandle {
+export function memoryStore(data: Store = { jobs: {}, processedMsgIds: [], channels: {}, pendingRoutes: {}, approvals: {}, lastThreadByOwner: {}, jobByDmThread: {}, contents: {}, contentQueues: {} }): StoreHandle {
   return { data, save() {} };
 }
