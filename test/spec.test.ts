@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSpec, wantsGithubComment, taskTitle } from "../src/spec.ts";
+import { buildFollowUpSpec, buildSpec, continuesConversation, wantsGithubComment, taskTitle } from "../src/spec.ts";
 
 const base = {
   repo: { owner: "acme", name: "api", orcaRepoId: "r1" },
@@ -172,4 +172,22 @@ test("a resumed run in another mode is told this spec replaces the previous one;
   assert.match(change, /This spec replaces your previous run's spec/);
   assert.doesNotMatch(change, /Update the existing PR/, "no PR to update after an investigation");
   assert.match(change, /gh pr create/);
+});
+
+test("a follow-up continues the conversation only in the same mode, and a plan always gets its approval gate again", () => {
+  assert.ok(continuesConversation("change", "change"));
+  assert.ok(continuesConversation("investigate", "investigate"));
+  assert.ok(!continuesConversation("investigate", "change"));
+  assert.ok(!continuesConversation("change", "plan"));
+  assert.ok(!continuesConversation("plan", "plan"));
+});
+
+test("a same-mode follow-up is the new message plus what this run hands back, with no rules about committing or pushing", () => {
+  const spec = buildFollowUpSpec({ ...paths, job: { ...base, request: "cambiá el nombre" }, resumed: true, previousPrUrl: "https://github.com/acme/api/pull/3" });
+  assert.match(spec, /BEGIN SLACK MESSAGE[\s\S]*cambiá el nombre/);
+  assert.match(spec, /respond to what it asks, nothing more/);
+  assert.match(spec, /no fixed sections/);
+  assert.match(spec, /if this reply opened or updated a PR, add its URL/);
+  assert.ok(spec.includes(paths.reportPath) && spec.includes(paths.outbox));
+  assert.doesNotMatch(spec, /\bpush\b|git commit|commit locally|pstack:poteto-mode|## Constraints|## Ownership|## Observable acceptance|\*\*Qué/);
 });

@@ -22,7 +22,7 @@ import type { UnknownName } from "./relay.ts";
 import { clearReports, planPath, relayPath, reportPath, slackPost } from "./report.ts";
 import { BUTTON_LABELS, decideRoute, routeHint, routeState } from "./route.ts";
 import type { Decision as RouteDecision, RouteAnswer, RouteState } from "./route.ts";
-import { buildRelaySpec, buildSpec, taskTitle } from "./spec.ts";
+import { buildFollowUpSpec, buildRelaySpec, buildSpec, continuesConversation, taskTitle } from "./spec.ts";
 import type { StoreHandle } from "./store.ts";
 import { matchUser, userLabel } from "./thread.ts";
 import type { SlackUser } from "./thread.ts";
@@ -594,7 +594,8 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode, no
   await launch(deps, next, async () => {
     if (next.sessionId) {
       try {
-        const spec = buildSpec({ job: next, resumed: true, previousPrUrl: previous.prUrl, ...paths });
+        const input = { job: next, resumed: true, previousPrUrl: previous.prUrl, ...paths };
+        const spec = continuesConversation(job.mode, mode) ? buildFollowUpSpec(input) : buildSpec(input);
         const started = await resumeSession(deps, { worktree, sessionId: next.sessionId, title, spec });
         console.log(`follow-up ${next.id}: resumed Claude session ${next.sessionId}`);
         return started;

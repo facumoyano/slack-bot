@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRelaySpec, buildSpec } from "../src/spec.ts";
+import { buildFollowUpSpec, buildRelaySpec, buildSpec } from "../src/spec.ts";
 import type { Mode } from "../src/jobs.ts";
 
 const MKT = "/home/facu/orca/projects/mkt-fyso";
@@ -60,4 +60,11 @@ test("a relay on a local-directory job names the directory and forbids discardin
   });
   assert.match(spec, new RegExp(`local directory \`${MKT}\` \\(mkt-fyso\\)`));
   assert.match(spec, /never `git clean`/);
+});
+
+test("a same-mode follow-up in a local directory is just the message and the reply file", () => {
+  const spec = buildFollowUpSpec({ job: { ...job("change"), request: "el precio son 15 usd/mes" }, resumed: true, ...paths });
+  assert.match(spec, /el precio son 15 usd\/mes/);
+  assert.match(spec, /\/tmp\/r\.md/);
+  assert.doesNotMatch(spec, /git add|commit locally|poteto-mode/);
 });
