@@ -1,8 +1,10 @@
 import { stat } from "node:fs/promises";
 import { answerQuestion } from "./ask.ts";
+import { drainContent } from "./bot.ts";
 import { loadDirs } from "./dirs.ts";
 import { FILES_ROOT } from "./files.ts";
 import { runInbox } from "./inbox.ts";
+import { CONTENT_ROOT, runIntake } from "./intake.ts";
 import { ensureRun, findRepo, knownGithubRepos, orcaRepoAt, realOrca, repoIdForPath } from "./orca.ts";
 import { limitRepos } from "./parse.ts";
 import { classifyWithJev } from "./route.ts";
@@ -43,5 +45,9 @@ store.save();
 console.log(`orca: bound to run ${store.data.runId}`);
 
 const slack = createSlack({ botToken, appToken });
-await slack.start({ orca: realOrca, store, resolveRepo: findRepo, dirs, resolveDir: repoIdForPath, knownRepos, allowedUsers, approvalUsers, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, classify });
-await runInbox({ orca: realOrca, poster: slack.poster, store, latestSession, filesRoot: FILES_ROOT });
+const bot = await slack.start({ orca: realOrca, store, resolveRepo: findRepo, dirs, resolveDir: repoIdForPath, knownRepos, allowedUsers, approvalUsers, latestSession, ask: answerQuestion, filesRoot: FILES_ROOT, classify });
+if (Object.keys(dirs).length) {
+  console.log(`content: watching ${CONTENT_ROOT}/entrada`);
+  void runIntake(bot);
+}
+await runInbox({ orca: realOrca, poster: slack.poster, store, latestSession, filesRoot: FILES_ROOT, onDirFree: (path) => drainContent(bot, path) });
