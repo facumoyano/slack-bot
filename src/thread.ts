@@ -7,6 +7,11 @@ import { toSlackMrkdwn } from "./report.ts";
 
 export type Thread = { channel: string; threadTs: string };
 
+/** Where a message goes: a thread, or the channel itself when `threadTs` is absent. */
+export type Place = { channel: string; threadTs?: string };
+
+export type Channel = { id: string; name: string };
+
 export type SlackUser = { id: string; name: string; displayName: string; realName: string; isBot: boolean; deleted: boolean };
 
 /** A message of `conversations.replies`, with only what the CLI shows or filters on. */
@@ -19,27 +24,35 @@ export type SlackApi = {
   self(): Promise<Self>;
   users(): Promise<SlackUser[]>;
   replies(thread: Thread): Promise<ThreadMsg[]>;
-  post(thread: Thread, message: Message): Promise<string>;
+  post(place: Place, message: Message): Promise<string>;
   permalink(channel: string, ts: string): Promise<string>;
-  upload(thread: Thread, path: string): Promise<void>;
+  upload(place: Place, path: string): Promise<void>;
+  /** Public and private channels the bot can see, to find one by name. */
+  channels(): Promise<Channel[]>;
 };
 
 type Common = { thread?: Thread; state?: string };
 
+type Text = { inline: string } | { file: string };
+
 export type Command =
-  | (Common & { kind: "post"; to: string[]; text: { inline: string } | { file: string }; files: string[]; dryRun: boolean })
+  | { kind: "open"; channel: string; to: string[]; text: Text; files: string[]; dryRun: boolean }
+  | (Common & { kind: "post"; to: string[]; text: Text; files: string[]; dryRun: boolean })
   | (Common & { kind: "read"; since?: string; from?: string; all: boolean })
   | (Common & { kind: "wait"; from: string; since?: string; timeoutMinutes: number });
 
 export class UsageError extends Error {}
 
 export const USAGE = `uso:
+  thread.ts open --channel <Cxxxx|#nombre> [--to <nombre|@nombre|Uxxxx> …] (--text <texto> | --text-file <ruta>) [--file <ruta> …] [--dry-run]
   thread.ts post [--thread <canal>:<ts>] [--to <nombre|@nombre|Uxxxx> …] (--text <texto> | --text-file <ruta>) [--file <ruta> …] [--dry-run]
   thread.ts read [--thread <canal>:<ts>] [--since <ts>] [--from <nombre|Uxxxx>] [--all]
   thread.ts wait [--thread <canal>:<ts>] --from <nombre|Uxxxx> [--since <ts>] [--timeout <minutos>]
+open abre un mensaje nuevo en el canal e imprime su hilo (<canal>:<ts>), para seguirlo con post, read y wait pasando --thread.
 Sin --thread, el hilo sale del job de Alfred cuyo worktree contiene el directorio actual (en data/state.json de este repo, u otro con --state <ruta>).`;
 
 const ALLOWED: Record<Command["kind"], readonly string[]> = {
+  open: ["channel", "to", "text", "text-file", "file", "dry-run"],
   post: ["thread", "state", "to", "text", "text-file", "file", "dry-run"],
   read: ["thread", "state", "since", "from", "all"],
   wait: ["thread", "state", "since", "from", "timeout"],
@@ -59,6 +72,7 @@ function since(value: string | undefined): string | undefined {
 }
 
 const OPTIONS = {
+  channel: { type: "string" },
   thread: { type: "string" },
   state: { type: "string" },
   to: { type: "string", multiple: true },
@@ -93,18 +107,24 @@ export function parseCommand(argv: readonly string[]): Command {
   }
   const { values: v, positionals } = parsed;
   const kind = positionals[0];
-  if (kind !== "post" && kind !== "read" && kind !== "wait") throw new UsageError(`comando desconocido "${kind ?? ""}": usá post, read o wait`);
+  if (kind !== "open" && kind !== "post" && kind !== "read" && kind !== "wait") throw new UsageError(`comando desconocido "${kind ?? ""}": usá open, post, read o wait`);
   if (positionals.length > 1) throw new UsageError(`sobra "${positionals[1]}"; si es texto, pasalo con --text "…"`);
   const stray = Object.keys(v).find((k) => !ALLOWED[kind].includes(k));
   if (stray) throw new UsageError(`--${stray} no aplica a ${kind}`);
   const common: Common = { thread: v.thread === undefined ? undefined : parseThread(v.thread), state: v.state };
+  const message = () => {
+    if (v.text !== undefined && v["text-file"] !== undefined) throw new UsageError("usá --text o --text-file, no los dos");
+    const text = v.text !== undefined ? { inline: v.text } : v["text-file"] !== undefined ? { file: v["text-file"] } : undefined;
+    if (!text || ("inline" in text && !text.inline.trim())) throw new UsageError(`${kind} necesita --text <texto> o --text-file <ruta>`);
+    return { to: v.to ?? [], text, files: v.file ?? [], dryRun: v["dry-run"] ?? false };
+  };
   switch (kind) {
-    case "post": {
-      if (v.text !== undefined && v["text-file"] !== undefined) throw new UsageError("usá --text o --text-file, no los dos");
-      const text = v.text !== undefined ? { inline: v.text } : v["text-file"] !== undefined ? { file: v["text-file"] } : undefined;
-      if (!text || ("inline" in text && !text.inline.trim())) throw new UsageError("post necesita --text <texto> o --text-file <ruta>");
-      return { ...common, kind, to: v.to ?? [], text, files: v.file ?? [], dryRun: v["dry-run"] ?? false };
+    case "open": {
+      if (!v.channel?.trim()) throw new UsageError("open necesita --channel <Cxxxx|#nombre>");
+      return { kind, channel: v.channel.trim(), ...message() };
     }
+    case "post":
+      return { ...common, kind, ...message() };
     case "read":
       return { ...common, kind, since: since(v.since), from: v.from, all: v.all ?? false };
     case "wait": {
@@ -237,41 +257,83 @@ function nowTs(ms: number): string {
   return (ms / 1000).toFixed(6);
 }
 
+const CHANNEL_ID = /^[CG][A-Z0-9]{8,}$/;
+
+/** A channel by id, or by name with or without `#`. */
+export function matchChannel(channels: readonly Channel[], query: string): Channel {
+  const wanted = query.trim().replace(/^#/, "").toLowerCase();
+  const found = channels.find((c) => c.name.toLowerCase() === wanted);
+  if (found) return found;
+  const near = channels.filter((c) => c.name.toLowerCase().includes(wanted)).slice(0, 10);
+  throw new UsageError(`no encontré el canal "${query}"${near.length ? `; parecidos: ${near.map((c) => `#${c.name} (${c.id})`).join(", ")}` : ""}`);
+}
+
+async function findChannel(api: SlackApi, query: string): Promise<string> {
+  if (CHANNEL_ID.test(query)) return query;
+  const channels = await api.channels().catch((err) => {
+    if (err?.data?.error === "missing_scope") throw new UsageError(`Alfred no tiene permiso para listar canales (falta channels:read); pasá el id del canal, como --channel C0123ABC`);
+    throw err;
+  });
+  return matchChannel(channels, query).id;
+}
+
+type MessageCmd = Extract<Command, { kind: "open" | "post" }>;
+
+/**
+ * Posts a Markdown message and its files. With no `threadTs`, the first post opens a new message in the channel and the rest of the
+ * text and the files go in its thread; returns that thread.
+ */
+async function postMessage(cmd: MessageCmd, place: Place, deps: RunDeps, resolveUser: (q: string) => Promise<string>): Promise<Thread | undefined> {
+  const { api, out } = deps;
+  const markdown = "inline" in cmd.text ? cmd.text.inline : await readFile(cmd.text.file, "utf8");
+  if (!markdown.trim()) throw new UsageError(`el texto a postear está vacío`);
+  const files = cmd.files.map((f) => resolve(f));
+  for (const f of files) {
+    if (!(await stat(f).then((s) => s.isFile(), () => false))) throw new UsageError(`no existe el archivo ${f}`);
+  }
+  const ids = [];
+  for (const q of cmd.to) ids.push(await resolveUser(q));
+  const posts = buildPosts(markdown, ids);
+  if (cmd.dryRun) {
+    posts.forEach((p, i) => out(`--- mensaje ${i + 1}/${posts.length} (no se postea, --dry-run) ---\n${p.text}`));
+    for (const f of files) out(`📎 subiría ${basename(f)}`);
+    return undefined;
+  }
+  let where = place;
+  for (const p of posts) {
+    const ts = await api.post(where, p);
+    out(`ts: ${ts}\npermalink: ${await api.permalink(where.channel, ts)}`);
+    if (!where.threadTs) {
+      where = { channel: where.channel, threadTs: ts };
+      out(`hilo: ${where.channel}:${ts}`);
+    }
+  }
+  for (const f of files) {
+    await api.upload(where, f);
+    out(`📎 subido ${basename(f)}`);
+  }
+  return where.threadTs ? { channel: where.channel, threadTs: where.threadTs } : undefined;
+}
+
 /** Runs one command; returns the exit code. Usage and Slack errors are thrown for the script to print. */
 export async function run(cmd: Command, deps: RunDeps): Promise<number> {
   const { api, out } = deps;
-  const thread = cmd.thread ?? (await deps.findThread(cmd.state));
   let users: Promise<SlackUser[]> | undefined;
   const allUsers = () => (users ??= api.users());
   const resolveUser = async (q: string) => (USER_ID.test(q.trim()) ? q.trim() : matchUser(await allUsers(), q).id);
+  if (cmd.kind === "open") {
+    const channel = await findChannel(api, cmd.channel);
+    out(`canal: ${channel}`);
+    await postMessage(cmd, { channel }, deps, resolveUser);
+    return 0;
+  }
+  const thread = cmd.thread ?? (await deps.findThread(cmd.state));
   out(`hilo: ${thread.channel}:${thread.threadTs}`);
 
   switch (cmd.kind) {
-    case "post": {
-      const markdown = "inline" in cmd.text ? cmd.text.inline : await readFile(cmd.text.file, "utf8");
-      if (!markdown.trim()) throw new UsageError(`el texto a postear está vacío`);
-      const files = cmd.files.map((f) => resolve(f));
-      for (const f of files) {
-        if (!(await stat(f).then((s) => s.isFile(), () => false))) throw new UsageError(`no existe el archivo ${f}`);
-      }
-      const ids = [];
-      for (const q of cmd.to) ids.push(await resolveUser(q));
-      const posts = buildPosts(markdown, ids);
-      if (cmd.dryRun) {
-        posts.forEach((p, i) => out(`--- mensaje ${i + 1}/${posts.length} (no se postea, --dry-run) ---\n${p.text}`));
-        for (const f of files) out(`📎 subiría ${basename(f)}`);
-        return 0;
-      }
-      for (const p of posts) {
-        const ts = await api.post(thread, p);
-        out(`ts: ${ts}\npermalink: ${await api.permalink(thread.channel, ts)}`);
-      }
-      for (const f of files) {
-        await api.upload(thread, f);
-        out(`📎 subido ${basename(f)}`);
-      }
+    case "post":
+      await postMessage(cmd, thread, deps, resolveUser);
       return 0;
-    }
     case "read": {
       const [self, from] = await Promise.all([api.self(), cmd.from === undefined ? undefined : resolveUser(cmd.from)]);
       const messages = selectMessages(await api.replies(thread), self, { since: cmd.since, from, all: cmd.all });
