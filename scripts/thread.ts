@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import bolt from "@slack/bolt";
 import { listUsers } from "../src/slack.ts";
 import { USAGE, UsageError, parseCommand, run, threadForCwd } from "../src/thread.ts";
-import type { SlackApi, StateJob, Thread, ThreadMsg } from "../src/thread.ts";
+import type { Channel, SlackApi, StateJob, Thread, ThreadMsg } from "../src/thread.ts";
 
 const STATE = join(import.meta.dirname, "..", "data", "state.json");
 
@@ -52,8 +52,8 @@ function slackApi(token: string): SlackApi {
       } while (cursor);
       return messages;
     },
-    async post(thread, message) {
-      const res = await client.chat.postMessage({ channel: thread.channel, thread_ts: thread.threadTs, text: message.text, blocks: message.blocks });
+    async post(place, message) {
+      const res = await client.chat.postMessage({ channel: place.channel, thread_ts: place.threadTs, text: message.text, blocks: message.blocks });
       if (!res.ts) throw new Error("chat.postMessage no devolvió ts");
       return res.ts;
     },
@@ -61,8 +61,18 @@ function slackApi(token: string): SlackApi {
       const res = await client.chat.getPermalink({ channel, message_ts: ts });
       return res.permalink ?? "(sin permalink)";
     },
-    async upload(thread, path) {
-      await client.filesUploadV2({ channel_id: thread.channel, thread_ts: thread.threadTs, file: path, filename: basename(path) });
+    async upload(place, path) {
+      await client.filesUploadV2({ channel_id: place.channel, thread_ts: place.threadTs, file: path, filename: basename(path) });
+    },
+    async channels() {
+      const channels: Channel[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await client.conversations.list({ types: "public_channel,private_channel", exclude_archived: true, limit: 200, cursor });
+        for (const c of page.channels ?? []) if (c.id && c.name) channels.push({ id: c.id, name: c.name });
+        cursor = page.response_metadata?.next_cursor || undefined;
+      } while (cursor);
+      return channels;
     },
   };
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "../src/blocks.ts";
 import { EXIT_TIMEOUT, UsageError, matchUser, parseCommand, run, threadForCwd, waitForReply } from "../src/thread.ts";
-import type { Clock, SlackApi, SlackUser, Thread, ThreadMsg } from "../src/thread.ts";
+import type { Clock, Place, SlackApi, SlackUser, Thread, ThreadMsg } from "../src/thread.ts";
 
 const job = (channel: string, threadTs: string, path?: string) => ({ slack: { channel, threadTs }, worktreeId: path && `repo-id::${path}` });
 
@@ -100,21 +100,28 @@ const self = { userId: "UBOT", botId: "BBOT" };
 function fakeApi(replies: ThreadMsg[][] = [[]]) {
   const posted: Message[] = [];
   const uploaded: string[] = [];
+  const places: Place[] = [];
   let polls = 0;
   const api: SlackApi = {
     self: async () => self,
     users: async () => people,
     replies: async () => replies[Math.min(polls++, replies.length - 1)],
-    post: async (_t, m) => {
+    post: async (place, m) => {
+      places.push(place);
       posted.push(m);
       return `200.${posted.length}`;
     },
     permalink: async (_c, ts) => `https://x.slack.com/p${ts}`,
-    upload: async (_t, path) => {
+    upload: async (place, path) => {
+      places.push(place);
       uploaded.push(path);
     },
+    channels: async () => [
+      { id: "C0PRODUCTO1", name: "producto" },
+      { id: "C0PRODEXT01", name: "producto-externo" },
+    ],
   };
-  return { api, posted, uploaded, polls: () => polls };
+  return { api, posted, uploaded, places, polls: () => polls };
 }
 
 function fakeClock(start = 1_000_000_000): Clock & { slept: number[] } {
@@ -149,6 +156,38 @@ test("post mentions the --to users first, renders Markdown as mrkdwn, uploads fi
   );
   assert.deepEqual(uploaded, [join(dir, "diagrama.png")]);
   assert.match(out, /ts: 200\.1\npermalink: https:\/\/x\.slack\.com\/p200\.1/);
+});
+
+test("open starts a new message in a channel found by name, puts the files in its thread and prints the thread to continue", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "thread-"));
+  await writeFile(join(dir, "propuesta.md"), "# Propuesta");
+  let looked = false;
+  const { api, posted, uploaded, places } = fakeApi();
+  const lines: string[] = [];
+  const code = await run(parseCommand(["open", "--channel", "#producto", "--to", "salva", "--text", "**Propuesta**: objetivos", "--file", join(dir, "propuesta.md")]), {
+    api,
+    clock: fakeClock(),
+    out: (l) => lines.push(l),
+    findThread: async () => {
+      looked = true;
+      return thread;
+    },
+  });
+  assert.equal(code, 0);
+  assert.ok(!looked, "open needs no job thread");
+  assert.deepEqual(posted.map((p) => p.text), ["<@U1> *Propuesta*: objetivos"]);
+  assert.deepEqual(uploaded, [join(dir, "propuesta.md")]);
+  assert.deepEqual(places, [{ channel: "C0PRODUCTO1" }, { channel: "C0PRODUCTO1", threadTs: "200.1" }]);
+  assert.match(lines.join("\n"), /canal: C0PRODUCTO1[^]*ts: 200\.1[^]*hilo: C0PRODUCTO1:200\.1/);
+});
+
+test("open takes a channel id as is, rejects an unknown name with the near ones, and needs --channel", async () => {
+  const { api, places } = fakeApi();
+  await runWith(["open", "--channel", "C0OTHER0001", "--text", "hola"], api);
+  assert.deepEqual(places, [{ channel: "C0OTHER0001" }]);
+  await assert.rejects(runWith(["open", "--channel", "prod", "--text", "hola"], api), /no encontré el canal "prod"; parecidos: #producto/);
+  assert.throws(() => parseCommand(["open", "--text", "hola"]), /--channel/);
+  assert.throws(() => parseCommand(["open", "--channel", "C1", "--thread", "C1:1.2", "--text", "a"]), /--thread no aplica a open/);
 });
 
 test("a long post is split into several messages on line breaks, losing nothing", async () => {
