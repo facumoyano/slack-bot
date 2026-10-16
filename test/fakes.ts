@@ -88,6 +88,10 @@ export function fakes(over: Partial<Orca> = {}) {
       calls.push(`wait ${handle}`);
       return true;
     },
+    async claudeTerminalOpen(handle) {
+      calls.push(`open? ${handle}`);
+      return false;
+    },
     async closeTerminal(handle) {
       calls.push(`close ${handle}`);
     },

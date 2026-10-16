@@ -56,11 +56,14 @@ export async function ensureRun(runId: string | undefined): Promise<string> {
   return id;
 }
 
-export type WorkerStart = { taskId: string; dispatchId: string; worktreeId?: string };
+/** `terminal` is the handle of the terminal the worker's Claude runs in, which a follow-up reuses while it stays open. */
+export type WorkerStart = { taskId: string; dispatchId: string; worktreeId?: string; terminal?: string };
 
 function workerStart(result: Json): WorkerStart {
-  const worktree = (result.effects ?? []).find((e: Json) => e.kind === "worktree");
-  return { taskId: result.taskId, dispatchId: result.dispatchId, worktreeId: worktree?.id };
+  const effects: Json[] = result.effects ?? [];
+  const worktree = effects.find((e) => e.kind === "worktree");
+  const terminal = effects.find((e) => e.kind === "terminal" && e.role === "agent");
+  return { taskId: result.taskId, dispatchId: result.dispatchId, worktreeId: worktree?.id, terminal: terminal?.id };
 }
 
 const WORKER_COMMON = ["--agent", "claude", "--timeout-ms", "600000"];
@@ -116,6 +119,17 @@ export async function waitTuiIdle(handle: string, timeoutMs: number): Promise<bo
     return false;
   } catch (err) {
     console.error(`terminal wait ${handle} failed:`, (err as Error).message);
+    return false;
+  }
+}
+
+/** Whether `handle` is still an open terminal with Claude running in it; a released worker's terminal, or one whose Claude exited, is not. */
+export async function claudeTerminalOpen(handle: string): Promise<boolean> {
+  try {
+    const { terminal } = await orca(["terminal", "show", "--terminal", handle]);
+    return terminal?.connected === true && terminal.orphaned !== true && terminal.agentIdentity === "claude";
+  } catch (err) {
+    console.error(`terminal show ${handle} failed:`, (err as Error).message);
     return false;
   }
 }
@@ -262,6 +276,7 @@ export type Orca = {
   changedFiles: typeof changedFiles;
   createTerminal: typeof createTerminal;
   waitTuiIdle: typeof waitTuiIdle;
+  claudeTerminalOpen: typeof claudeTerminalOpen;
   closeTerminal: typeof closeTerminal;
   startWorkerInTerminal: typeof startWorkerInTerminal;
   stopWorker: typeof stopWorker;
@@ -281,6 +296,7 @@ export const realOrca: Orca = {
   changedFiles,
   createTerminal,
   waitTuiIdle,
+  claudeTerminalOpen,
   closeTerminal,
   startWorkerInTerminal,
   stopWorker,
