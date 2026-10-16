@@ -83,6 +83,8 @@ export type Job = {
   dispatchId?: string;
   /** The last worker's Claude session, resumed by the next follow-up. */
   sessionId?: string;
+  /** The terminal the last worker's Claude runs in; a follow-up continues there while it is open. */
+  terminal?: string;
   /** A local directory's HEAD when the current run started, so its done post lists the files the run committed. */
   runBase?: string;
   /** The message announcing the current worker, whose buttons are retired when the job leaves the active states. */
@@ -113,7 +115,7 @@ export type Store = {
 };
 
 export type JobEvent =
-  | { kind: "started"; worktreeId: string; taskId: string; dispatchId: string; base?: string }
+  | { kind: "started"; worktreeId: string; taskId: string; dispatchId: string; base?: string; terminal?: string }
   | { kind: "start_failed"; error: string }
   | { kind: "question"; msgId: string; question: string; options: string[] }
   | { kind: "question_posted"; msgId: string; ts: string }
@@ -185,10 +187,11 @@ export function transition(job: Job, ev: JobEvent): Job | undefined {
   const from = job.state.kind;
   switch (ev.kind) {
     case "started":
-      if (from === "relaying" && !job.dispatchId) return { ...job, taskId: ev.taskId, dispatchId: ev.dispatchId };
+      if (from === "relaying" && !job.dispatchId) return { ...job, taskId: ev.taskId, dispatchId: ev.dispatchId, terminal: ev.terminal };
       if (from !== "starting") return undefined;
       return {
         ...job,
+        terminal: ev.terminal,
         worktreeId: ev.worktreeId,
         taskId: ev.taskId,
         dispatchId: ev.dispatchId,

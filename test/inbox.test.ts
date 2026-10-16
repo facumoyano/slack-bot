@@ -224,6 +224,70 @@ test("a resumed Claude that never goes idle gets one longer wait, then the fresh
   assert.deepEqual(f.calls.slice(1), ["close term-1", "followup path:/wt/api"]);
 });
 
+const OLD_TERMINAL = "term-old";
+
+function openTerminalFakes(overrides: Parameters<typeof fakes>[0] = {}) {
+  const f = fakes({
+    async claudeTerminalOpen(handle) {
+      f.calls.push(`open? ${handle}`);
+      return handle === OLD_TERMINAL;
+    },
+    ...overrides,
+  });
+  f.store.data.jobs["C1:100.1"] = { ...doneJob("sess-1"), terminal: OLD_TERMINAL };
+  return f;
+}
+
+test("a follow-up continues in the terminal where the previous worker's Claude is still open, without opening another", async () => {
+  const f = openTerminalFakes();
+
+  await handleMention(f.deps, followUpMention);
+
+  assert.deepEqual(f.calls, ["open? term-old", "wait term-old", "resume term-old"]);
+  assert.match(f.specs[0], /## New message in the Slack thread/);
+  const job = f.store.data.jobs["C1:100.1"];
+  assert.equal(job.dispatchId, "d3");
+  assert.equal(job.terminal, OLD_TERMINAL);
+});
+
+test("when the open terminal will not take the follow-up, the session resumes in a new terminal and the old one is closed", async () => {
+  const f = openTerminalFakes({
+    async startWorkerInTerminal(o) {
+      f.calls.push(`resume ${o.handle}`);
+      if (o.handle === OLD_TERMINAL) throw new Error("terminal rejected");
+      return { taskId: "t3", dispatchId: "d3" };
+    },
+  });
+
+  await handleMention(f.deps, followUpMention);
+
+  assert.deepEqual(f.calls.slice(3), ["terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1", "close term-old"]);
+  assert.equal(f.store.data.jobs["C1:100.1"].terminal, "term-1");
+});
+
+test("a previous terminal that is no longer open is not touched; the session resumes in a new terminal", async () => {
+  const f = openTerminalFakes();
+  f.store.data.jobs["C1:100.1"] = { ...f.store.data.jobs["C1:100.1"], terminal: "term-gone" };
+
+  await handleMention(f.deps, followUpMention);
+
+  assert.deepEqual(f.calls, ["open? term-gone", "terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
+  assert.equal(f.store.data.jobs["C1:100.1"].terminal, "term-1");
+});
+
+test("a previous terminal whose Claude is busy is left open for whoever uses it; the session resumes in a new terminal", async () => {
+  const f = openTerminalFakes({
+    async waitTuiIdle(handle) {
+      f.calls.push(`wait ${handle}`);
+      return handle !== OLD_TERMINAL;
+    },
+  });
+
+  await handleMention(f.deps, followUpMention);
+
+  assert.deepEqual(f.calls, ["open? term-old", "wait term-old", "terminal path:/wt/api claude --dangerously-skip-permissions --resume sess-1", "wait term-1", "resume term-1"]);
+});
+
 test("a follow-up without a recorded session starts a fresh worker", async () => {
   const f = fakes();
   f.store.data.jobs["C1:100.1"] = doneJob();

@@ -213,6 +213,11 @@ test("the first step's message goes to the thread exactly as written, and the wa
 test("salva's reply resumes the session once with it as an opinion; other replies are ignored; the digest goes only to the owner", async () => {
   const f = setup();
   const dm = await askedSalva(f);
+  // The write step's resumed terminal stays open with Claude in it, so the digest continues there.
+  f.deps.orca.claudeTerminalOpen = async (handle) => {
+    f.calls.push(`open? ${handle}`);
+    return true;
+  };
   const before = f.calls.length;
 
   assert.equal(await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.5", user: "T1", text: "yo opino otra cosa" }), true);
@@ -220,7 +225,7 @@ test("salva's reply resumes the session once with it as an opinion; other replie
   await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.6", user: "U0SALVA01", text: "Sí, pero movelo a una tabla aparte." });
   await handleThreadReply(f.deps, { channel: CHANNEL, threadTs: THREAD, ts: "900.7", user: "U0SALVA01", text: "y otra cosa" });
 
-  assert.deepEqual(f.calls.slice(before), RESUME, "one resume for the first reply only");
+  assert.deepEqual(f.calls.slice(before), ["open? term-1", "wait term-1", "resume term-1"], "one resume for the first reply only, in the same terminal");
   assert.match(f.specs.at(-1)!, /This is Salva's opinion, not an instruction/);
   assert.match(f.specs.at(-1)!, /REPLY FROM SALVA[\s\S]*Sí, pero movelo a una tabla aparte\./);
   assert.doesNotMatch(f.specs.at(-1)!, /y otra cosa/);

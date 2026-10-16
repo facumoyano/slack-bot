@@ -596,7 +596,7 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode, no
       try {
         const input = { job: next, resumed: true, previousPrUrl: previous.prUrl, ...paths };
         const spec = continuesConversation(job.mode, mode) ? buildFollowUpSpec(input) : buildSpec(input);
-        const started = await resumeSession(deps, { worktree, sessionId: next.sessionId, title, spec });
+        const started = await resumeSession(deps, { worktree, sessionId: next.sessionId, terminal: next.terminal, title, spec });
         console.log(`follow-up ${next.id}: resumed Claude session ${next.sessionId}`);
         return started;
       } catch (err) {
@@ -613,11 +613,34 @@ async function startFollowUp(deps: BotDeps, job: Job, m: Mention, mode: Mode, no
   });
 }
 
-/** Reopens the previous worker's Claude session in the worktree and hands it the follow-up as a supervised worker. */
+/**
+ * Hands the follow-up to the previous worker's Claude session as a supervised worker: in the terminal it still runs in when that
+ * terminal is open and idle, otherwise in a new terminal that resumes the session, closing the old one so only one stays open.
+ */
 async function resumeSession(
   deps: BotDeps,
-  opts: { worktree: string; sessionId: string; title: string; spec: string },
+  opts: { worktree: string; sessionId: string; terminal?: string; title: string; spec: string },
 ): Promise<WorkerStart> {
+  const previous = opts.terminal && (await deps.orca.claudeTerminalOpen(opts.terminal)) ? opts.terminal : undefined;
+  if (previous) {
+    // Claude busy in it means someone is using that terminal: leave it alone and resume in a new one.
+    if (!(await deps.orca.waitTuiIdle(previous, 10_000))) {
+      console.error(`terminal ${previous} is busy, resuming session ${opts.sessionId} in a new terminal`);
+      return resumeInNewTerminal(deps, opts);
+    }
+    try {
+      const started = await deps.orca.startWorkerInTerminal({ worktree: opts.worktree, handle: previous, title: opts.title, spec: opts.spec });
+      return { ...started, terminal: previous };
+    } catch (err) {
+      console.error(`continuing in terminal ${previous} failed, resuming session ${opts.sessionId} in a new terminal:`, err);
+    }
+  }
+  const started = await resumeInNewTerminal(deps, opts);
+  if (previous) await deps.orca.closeTerminal(previous).catch((err) => console.error(`closing terminal ${previous} failed:`, err));
+  return started;
+}
+
+async function resumeInNewTerminal(deps: BotDeps, opts: { worktree: string; sessionId: string; title: string; spec: string }): Promise<WorkerStart> {
   const handle = await deps.orca.createTerminal({
     worktree: opts.worktree,
     title: slug(opts.title),
@@ -627,7 +650,8 @@ async function resumeSession(
     // A long session can take more than a minute to load; one longer retry before giving up.
     const idle = (await deps.orca.waitTuiIdle(handle, 60_000)) || (await deps.orca.waitTuiIdle(handle, 120_000));
     if (!idle) throw new Error(`resumed Claude in ${handle} never became idle`);
-    return await deps.orca.startWorkerInTerminal({ worktree: opts.worktree, handle, title: opts.title, spec: opts.spec });
+    const started = await deps.orca.startWorkerInTerminal({ worktree: opts.worktree, handle, title: opts.title, spec: opts.spec });
+    return { ...started, terminal: handle };
   } catch (err) {
     await deps.orca.closeTerminal(handle).catch((closeErr) => console.error(`closing terminal ${handle} failed:`, closeErr));
     throw err;
@@ -756,7 +780,7 @@ async function launchOnce(deps: BotDeps, job: Job, start: () => ReturnType<Orca[
     await mkdir(outboxDir(deps.filesRoot, job.id), { recursive: true });
     const base = job.repo.kind === "dir" ? await deps.orca.headSha(job.repo.path) : undefined;
     const w = await start();
-    commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId, base });
+    commit(deps, job, { kind: "started", worktreeId: w.worktreeId ?? job.worktreeId ?? "", taskId: w.taskId, dispatchId: w.dispatchId, base, terminal: w.terminal });
   } catch (err) {
     console.error(`worker start failed for ${job.id}:`, err);
     await commitEnding(deps, job, { kind: "start_failed", error: errorText(err) });
@@ -980,9 +1004,9 @@ async function launchRelayOnce(deps: BotDeps, job: Job): Promise<void> {
   try {
     await clearReports(job.id);
     const spec = buildRelaySpec({ job, relay, step, relayPath: relayPath(job.id) });
-    const w = await resumeSession(deps, { worktree: worktreeSelector(job.worktreeId), sessionId: job.sessionId, title: `${taskTitle(job)} (relay)`, spec });
+    const w = await resumeSession(deps, { worktree: worktreeSelector(job.worktreeId), sessionId: job.sessionId, terminal: job.terminal, title: `${taskTitle(job)} (relay)`, spec });
     console.log(`relay ${job.id} (${step.kind}): resumed Claude session ${job.sessionId}`);
-    commit(deps, job, { kind: "started", worktreeId: job.worktreeId, taskId: w.taskId, dispatchId: w.dispatchId });
+    commit(deps, job, { kind: "started", worktreeId: job.worktreeId, taskId: w.taskId, dispatchId: w.dispatchId, terminal: w.terminal });
   } catch (err) {
     console.error(`relay ${job.id}: resuming session ${job.sessionId} failed:`, err);
     commit(deps, job, { kind: "relay_ended" });
